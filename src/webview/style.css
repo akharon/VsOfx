@@ -1,0 +1,431 @@
+/* Uses VS Code theme variables so light, dark and high-contrast themes just work. */
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+body {
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-editor-font-family, sans-serif);
+  font-size: var(--vscode-editor-font-size, 13px);
+}
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.loading {
+  padding: 2em;
+  color: var(--vscode-descriptionForeground);
+}
+.banner {
+  padding: 4px 12px;
+  background: var(--vscode-editorInfo-background, var(--vscode-editorWidget-background));
+  border-bottom: 1px solid var(--vscode-editorWidget-border, transparent);
+  color: var(--vscode-descriptionForeground);
+  flex: none;
+}
+.error {
+  max-width: 40em;
+  margin: 3em auto;
+  padding: 0 1em;
+}
+.error h2 {
+  color: var(--vscode-errorForeground);
+}
+button {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: 1px solid var(--vscode-button-border, transparent);
+  padding: 4px 12px;
+  cursor: pointer;
+}
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+/* ---- text documents ---- */
+.doc-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.doc-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+.doc-nav {
+  flex: none;
+  width: 16em;
+  overflow: auto;
+  padding: 4px 0;
+  border-right: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.4));
+  background: var(--vscode-sideBar-background, transparent);
+}
+.doc-nav .nav-item {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  color: var(--vscode-sideBar-foreground, var(--vscode-editor-foreground));
+  background: transparent;
+  border: none;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-nav .nav-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.doc-nav .nav-empty {
+  padding: 0 8px;
+  color: var(--vscode-descriptionForeground);
+}
+.page {
+  box-sizing: border-box;
+  max-width: 52em;
+  margin: 0 auto;
+  padding: 2em 2.5em 4em;
+  line-height: 1.55;
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: calc(14px * var(--zoom, 1));
+}
+.page.marks p::after,
+.page.marks h1::after,
+.page.marks h2::after,
+.page.marks h3::after,
+.page.marks h4::after,
+.page.marks h5::after,
+.page.marks h6::after,
+.page.marks li::after {
+  content: '¶';
+  margin-left: 3px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
+  user-select: none;
+}
+.page table {
+  border-collapse: collapse;
+  margin: 1em 0;
+}
+.page td,
+.page th {
+  border: 1px solid var(--vscode-editorWidget-border, #888);
+  padding: 4px 8px;
+  vertical-align: top;
+}
+.page td > p,
+.page li > p {
+  margin: 0;
+}
+.page img {
+  max-width: 100%;
+  height: auto;
+}
+.page .editable {
+  outline: none;
+  border-radius: 2px;
+}
+.page .editable:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.page .editable:focus {
+  background: var(--vscode-editor-selectionHighlightBackground, var(--vscode-list-hoverBackground));
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+/* ---- spreadsheets ---- */
+.sheet {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.grid-scroll {
+  flex: 1;
+  overflow: auto;
+  outline: none;
+}
+table.grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-size: 13px;
+}
+table.grid th,
+table.grid td {
+  border-right: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+  border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+  padding: 0 4px;
+  height: 21px;
+  line-height: 21px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+table.grid th {
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-sideBar-background));
+  color: var(--vscode-descriptionForeground);
+  font-weight: normal;
+  text-align: center;
+  position: sticky;
+  z-index: 2;
+}
+table.grid thead th {
+  top: 0;
+}
+table.grid th.rowhead,
+table.grid th.corner {
+  left: 0;
+  z-index: 3;
+}
+table.grid th.rowhead {
+  z-index: 1;
+}
+table.grid td.num {
+  text-align: right;
+}
+table.grid td.sel {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: -2px;
+}
+table.grid td.editing {
+  padding: 0;
+  overflow: visible;
+}
+.cell-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-width: 8em;
+  margin: 0;
+  padding: 0 4px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-focusBorder);
+  font: inherit;
+  outline: none;
+}
+.tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 2px 4px 0;
+  overflow-x: auto;
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-sideBar-background));
+  border-top: 1px solid var(--vscode-editorWidget-border, transparent);
+}
+.tabs .tab {
+  color: var(--vscode-tab-inactiveForeground);
+  background: var(--vscode-tab-inactiveBackground, transparent);
+  border: none;
+  padding: 4px 14px;
+}
+.tabs .tab.active {
+  color: var(--vscode-tab-activeForeground);
+  background: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+  box-shadow: inset 0 -2px 0 var(--vscode-focusBorder);
+}
+
+/* ---- slides ---- */
+.slides {
+  font-size: calc(var(--vscode-editor-font-size, 13px) * var(--zoom, 1));
+  overflow: auto;
+  padding: 1em 2em 3em;
+  max-width: 56em;
+  margin: 0 auto;
+}
+.slide {
+  border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.4));
+  border-radius: 4px;
+  padding: 0.5em 1.5em 1em;
+  margin-bottom: 1.2em;
+  background: var(--vscode-editorWidget-background, transparent);
+}
+.slide h2 {
+  font-size: 1.25em;
+  margin: 0.6em 0 0.4em;
+}
+.slide img {
+  max-width: 100%;
+  max-height: 24em;
+  display: block;
+  margin: 0.6em 0;
+}
+.slide .notes {
+  white-space: pre-wrap;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ---- toolbar, find bar, formula bar ---- */
+.toolbar {
+  flex: none;
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-sideBar-background));
+  border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px 8px;
+}
+.toolbar button {
+  padding: 2px 8px;
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+}
+.toolbar button:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+.toolbar button[aria-pressed='true'] {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+.toolbar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.toolbar .sep {
+  align-self: stretch;
+  width: 1px;
+  margin: 0 4px;
+  background: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.4));
+}
+.toolbar .info {
+  margin-left: auto;
+  color: var(--vscode-descriptionForeground);
+}
+.findbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 5px;
+}
+.findbar[hidden] {
+  display: none;
+}
+.findbar input {
+  width: 16em;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 2px 6px;
+  font: inherit;
+}
+.findbar input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+.findbar .find-status {
+  min-width: 6em;
+  color: var(--vscode-descriptionForeground);
+}
+::highlight(vsofx-find) {
+  background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33));
+}
+::highlight(vsofx-find-current) {
+  background-color: var(--vscode-editor-findMatchBackground, rgba(162, 118, 0, 0.7));
+}
+.formula-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+.formula-bar .name-box {
+  min-width: 4em;
+  padding: 0 6px;
+  text-align: center;
+  border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.4));
+}
+.formula-bar .fx {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+.formula-bar .formula-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+table.grid th.filter {
+  padding: 0;
+  top: 22px;
+}
+table.grid th.filter input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 21px;
+  padding: 0 4px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: none;
+  font: inherit;
+}
+table.grid th.filters.corner,
+table.grid tr.filters th.corner {
+  top: 22px;
+}
+table.grid.freeze tbody tr[data-r='0'] td,
+table.grid.freeze tbody tr[data-r='0'] th {
+  position: sticky;
+  top: var(--frozen-top, 22px);
+  z-index: 1;
+  background: var(--vscode-editor-background);
+}
+table.grid.freeze tbody tr[data-r='0'] th.rowhead {
+  z-index: 2;
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-sideBar-background));
+}
+
+/* ---- PDF ---- */
+.pdf-scroll { overflow: auto; flex: 1; min-height: 0; background: var(--vscode-editorGroup-background, #2b2b2b); padding: 12px 0; }
+.pdf-scroll.placing, .pdf-scroll.placing .pdf-overlay { cursor: crosshair; }
+.pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.pdf-page { position: relative; background: #fff; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45); flex: none; color-scheme: only light; }
+.pdf-page canvas { position: absolute; inset: 0; }
+.pdf-page.deleted > canvas, .pdf-page.deleted > .textLayer { opacity: 0.12; }
+.pdf-deleted { position: absolute; inset: 0 0 auto 0; padding: 8px; background: #fff3cd; color: #333; text-align: center; font-size: 13px; z-index: 5; }
+.pdf-overlay { position: absolute; inset: 0; z-index: 2; }
+.pdf-w { position: absolute; box-sizing: border-box; }
+.pdf-w > input[type='text'], .pdf-w > textarea, .pdf-w > select {
+  width: 100%; height: 100%; box-sizing: border-box; margin: 0; padding: 0 2px; border: 1px solid rgba(0, 90, 200, 0.35);
+  background: rgba(190, 215, 255, 0.35); color: #000; font-family: Helvetica, Arial, sans-serif; resize: none; outline: none; border-radius: 0;
+}
+.pdf-w > textarea { padding: 2px; }
+.pdf-w > input:focus, .pdf-w > textarea:focus, .pdf-w > select:focus { background: rgba(255, 255, 255, 0.85); border-color: #0b6cd6; box-shadow: 0 0 0 1px #0b6cd6; }
+.pdf-w > input[type='checkbox'], .pdf-w > input[type='radio'] { width: 100%; height: 100%; margin: 0; accent-color: #0b6cd6; background: rgba(190, 215, 255, 0.35); }
+.pdf-static { width: 100%; height: 100%; box-sizing: border-box; border: 1px dashed rgba(0, 90, 200, 0.5); background: rgba(190, 215, 255, 0.2); color: #557; font: 11px sans-serif; display: flex; align-items: center; justify-content: center; }
+.pdf-ftext { color: #000; font-family: Helvetica, Arial, sans-serif; white-space: pre-wrap; line-height: 1.2; outline: none; min-width: 10px; }
+.pdf-handle { display: none; position: absolute; right: -5px; bottom: -5px; width: 10px; height: 10px; background: #0b6cd6; cursor: nwse-resize; z-index: 3; }
+.pdf-scroll.design .pdf-w { outline: 1px dashed #0b6cd6; cursor: move; }
+.pdf-scroll.design .pdf-w > :not(.pdf-handle) { pointer-events: none; }
+.pdf-scroll.design .pdf-w.selected { outline: 2px solid #0b6cd6; }
+.pdf-scroll.design .pdf-w.selected > .pdf-handle { display: block; }
+.pdf-panel { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border, #444); font-size: 12px; }
+.pdf-panel input { font: inherit; }
+.pdf-panel[hidden] { display: none; }
+.textLayer { position: absolute; inset: 0; overflow: clip; opacity: 1; line-height: 1; text-align: initial; transform-origin: 0 0; z-index: 1; forced-color-adjust: none; text-size-adjust: none; }
+.textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+.textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) {
+  --font-height: 0; font-size: calc(var(--total-scale-factor) * var(--font-height)); --scale-x: 1; --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x));
+}
+.textLayer .markedContent { display: contents; }
+.textLayer ::selection { background: rgba(0, 90, 200, 0.3); }
+.pdf-page ::highlight(vsofx-find) { background: rgba(255, 220, 0, 0.45); color: transparent; }
+.pdf-page ::highlight(vsofx-find-current) { background: rgba(255, 140, 0, 0.7); color: transparent; }

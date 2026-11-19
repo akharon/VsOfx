@@ -1,0 +1,125 @@
+{
+  "name": "vsofx",
+  "displayName": "VsOfx",
+  "description": "View and edit Office documents (.docx .xlsx .pptx .odt .ods) and fill or edit PDF forms in VS Code. Sandboxed, no network.",
+  "version": "0.0.2",
+  "publisher": "vsofx",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=22.18.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "office",
+    "docx",
+    "xlsx",
+    "pptx",
+    "odt",
+    "ods",
+    "pdf",
+    "pdf-form",
+    "viewer",
+    "editor"
+  ],
+  "main": "./dist/host.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "vsofx.officeEditor",
+        "displayName": "VsOfx Office Editor",
+        "priority": "default",
+        "selector": [
+          {
+            "filenamePattern": "*.docx"
+          },
+          {
+            "filenamePattern": "*.xlsx"
+          },
+          {
+            "filenamePattern": "*.pptx"
+          },
+          {
+            "filenamePattern": "*.odt"
+          },
+          {
+            "filenamePattern": "*.ods"
+          },
+          {
+            "filenamePattern": "*.pdf"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "vsofx.reopenWithTextEditor",
+        "title": "VsOfx: Reopen with Text Editor"
+      }
+    ],
+    "configuration": {
+      "title": "VsOfx",
+      "properties": {
+        "vsofx.maxFileSizeMB": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Ask before opening Office files larger than this many megabytes."
+        },
+        "vsofx.retainContextWhenHidden": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the editor state when its tab is hidden (uses more memory, avoids re-parsing). Requires a window reload to take effect."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "build:test": "node esbuild.mjs --test-build",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p src/host/tsconfig.json --noEmit && tsc -p src/webview/tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "lint": "eslint src test scripts esbuild.mjs",
+    "test": "node scripts/vitest.mjs run",
+    "test:integration": "node esbuild.mjs --test-build && vscode-test",
+    "check:bundles": "node scripts/check-bundles.mjs",
+    "check:licenses": "node scripts/notices.mjs --check",
+    "notices": "node scripts/notices.mjs",
+    "fixtures": "node scripts/make-fixtures.ts",
+    "check": "npm run lint && npm run typecheck && npm run build && npm run check:bundles && npm run test && npm run check:licenses",
+    "package": "node scripts/package.mjs",
+    "package:clean": "npm ci --ignore-scripts && npm run package"
+  },
+  "dependencies": {
+    "@cantoo/pdf-lib": "2.11.1",
+    "@xmldom/xmldom": "0.8.15",
+    "exceljs": "4.4.0",
+    "fflate": "0.8.3",
+    "mammoth": "1.13.0",
+    "pdfjs-dist": "6.5.438"
+  },
+  "devDependencies": {
+    "@types/mocha": "10.0.10",
+    "@types/node": "24.19.2",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-cli": "0.0.15",
+    "@vscode/test-electron": "2.5.2",
+    "@vscode/vsce": "3.9.1",
+    "esbuild": "0.28.2",
+    "eslint": "10.15.0",
+    "jsdom": "31.0.1",
+    "license-checker-rseidelsohn": "4.4.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.73.0",
+    "vitest": "4.1.1"
+  }
+}

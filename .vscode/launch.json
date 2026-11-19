@@ -1,0 +1,27 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/test/fixtures"],
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "preLaunchTask": "npm: build (dev)"
+    },
+    {
+      "name": "Build VSIX (npm run package)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run package:clean",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Integration Tests",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run test:integration",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

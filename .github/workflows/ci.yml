@@ -1,0 +1,27 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - name: Integration tests (real VS Code, headless)
+        run: xvfb-run -a npm run test:integration
+      - name: Unit tests without network (container)
+        run: |
+          npm run build
+          docker run --rm --network none -v "$PWD":/w -w /w node:24 npx vitest run
+      - run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: "*.vsix"
