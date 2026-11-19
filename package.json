@@ -1,7 +1,7 @@
 {
   "name": "vsofx",
   "displayName": "VsOfx",
-  "description": "View and edit Office documents (.docx .xlsx .pptx .odt .ods), CSV tables, PDF forms, and JSON / YAML / XML / Markdown with a visual editor in VS Code. Sandboxed, no network.",
+  "description": "View and edit Office documents (.docx .xlsx .pptx .odt .ods .odp .odg), CSV tables, PDF forms, and Markdown with a live preview in VS Code. Sandboxed, no network.",
   "version": "0.0.2",
   "publisher": "vsofx",
   "license": "MIT",
@@ -20,12 +20,11 @@
     "pptx",
     "odt",
     "ods",
+    "odp",
+    "odg",
     "pdf",
     "pdf-form",
     "csv",
-    "json",
-    "yaml",
-    "xml",
     "markdown",
     "viewer",
     "editor"
@@ -60,6 +59,12 @@
             "filenamePattern": "*.ods"
           },
           {
+            "filenamePattern": "*.odp"
+          },
+          {
+            "filenamePattern": "*.odg"
+          },
+          {
             "filenamePattern": "*.pdf"
           },
           {
@@ -72,18 +77,9 @@
       },
       {
         "viewType": "vsofx.dataEditor",
-        "displayName": "VsOfx Visual Editor (tree / preview)",
+        "displayName": "VsOfx Markdown Editor (preview)",
         "priority": "option",
         "selector": [
-          { "filenamePattern": "*.json" },
-          { "filenamePattern": "*.jsonc" },
-          { "filenamePattern": "*.yaml" },
-          { "filenamePattern": "*.yml" },
-          { "filenamePattern": "*.xml" },
-          { "filenamePattern": "*.xsd" },
-          { "filenamePattern": "*.svg" },
-          { "filenamePattern": "*.csproj" },
-          { "filenamePattern": "*.plist" },
           { "filenamePattern": "*.md" },
           { "filenamePattern": "*.markdown" }
         ]
@@ -104,14 +100,14 @@
       "editor/title": [
         {
           "command": "vsofx.openInVisualEditor",
-          "when": "resourceExtname =~ /^\\.(json|jsonc|ya?ml|xml|xsd|svg|csproj|plist|md|markdown)$/ && activeEditor == workbench.editors.files.textFileEditor",
+          "when": "resourceExtname =~ /^\\.(md|markdown)$/ && activeEditor == workbench.editors.files.textFileEditor",
           "group": "navigation"
         }
       ],
       "explorer/context": [
         {
           "command": "vsofx.openInVisualEditor",
-          "when": "resourceExtname =~ /^\\.(json|jsonc|ya?ml|xml|xsd|svg|csproj|plist|md|markdown)$/",
+          "when": "resourceExtname =~ /^\\.(md|markdown)$/",
           "group": "navigation@9"
         }
       ]
@@ -154,12 +150,10 @@
     "@xmldom/xmldom": "0.8.15",
     "exceljs": "4.4.0",
     "fflate": "0.8.3",
-    "jsonc-parser": "3.3.1",
     "mammoth": "1.13.0",
     "markdown-it": "14.1.0",
     "papaparse": "5.5.3",
-    "pdfjs-dist": "6.5.438",
-    "yaml": "2.8.1"
+    "pdfjs-dist": "6.5.438"
   },
   "devDependencies": {
     "@types/markdown-it": "14.1.2",

@@ -9,7 +9,11 @@ const md = new MarkdownIt({ html: false, linkify: true, typographer: false, brea
 // source line of each block, so the preview can jump to the source
 md.core.ruler.push('source_lines', (state) => {
   for (const t of state.tokens) {
-    if (t.map && t.nesting >= 0 && t.block) t.attrSet('data-line', String(t.map[0]));
+    if (t.map && t.nesting >= 0 && t.block) {
+      t.attrSet('data-line', String(t.map[0]));
+      if (t.level === 0) t.attrSet('data-end', String(t.map[1]));
+    }
+    if ((t.type === 'bullet_list_open' || t.type === 'ordered_list_open') && t.markup) t.attrSet('data-markup', t.markup);
   }
   return true;
 });
@@ -45,10 +49,24 @@ export function renderMarkdown(source: string, target: HTMLElement): void {
       alt.className = 'img-alt';
       alt.textContent = `🖼 ${img.getAttribute('alt') || src}`;
       alt.title = src;
+      alt.dataset['src'] = src;
+      alt.dataset['alt'] = img.getAttribute('alt') ?? '';
+      alt.setAttribute('contenteditable', 'false');
       img.replaceWith(alt);
     }
   }
   for (const a of Array.from(doc.querySelectorAll('a'))) a.setAttribute('title', a.getAttribute('href') ?? '');
+  // fenced code: markdown-it puts the attributes on <code>; the block is the <pre>
+  for (const pre of Array.from(doc.querySelectorAll('body > pre'))) {
+    const code = pre.querySelector('code');
+    for (const k of ['data-line', 'data-end']) {
+      const v = code?.getAttribute(k);
+      if (v !== null && v !== undefined) {
+        pre.setAttribute(k, v);
+        code!.removeAttribute(k);
+      }
+    }
+  }
   target.replaceChildren(...Array.from(doc.body.childNodes).map((n) => document.importNode(n, true)));
 }
 

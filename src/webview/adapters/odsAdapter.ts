@@ -3,6 +3,8 @@ import { MAX_COLS, MAX_ROWS } from '../../shared/model';
 import type { FormatAdapter } from './Adapter';
 import { isEl, MIME_ODS, NS, odfText, openOdf, saveOdf, setOdfText, type OdfPackage } from './odf';
 import { descendantsNS } from './xml';
+import { Calc, excelToOdf, FormulaError, odfToExcel, UNSUPPORTED, type Book, type Scalar } from '../../shared/formula';
+import { general } from './numFmt';
 
 const NUMBER = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/;
 const LEADING_ZERO = /^[-+]?0\d/;
@@ -54,7 +56,41 @@ export class OdsAdapter implements FormatAdapter {
     }
     if (edit.value === orig.input) restore(cell, orig.snapshot);
     else writeCell(this.pkg.content, cell, edit);
-    return { cell: cellView(cell) };
+    const others = this.recalc().filter((o) => !(o.sheet === edit.sheet && o.row === edit.row && o.col === edit.col));
+    const res: ApplyResult = { cell: cellView(cell) };
+    if (others.length) res.others = others;
+    return res;
+  }
+
+  /** Recomputes all formulas of the workbook; returns the cells whose result changed. */
+  private recalc(): NonNullable<ApplyResult['others']> {
+    const grids = this.tables.map(indexCells);
+    const book: Book = {
+      sheetIndex: (name) => this.tables.findIndex((t) => (t.getAttributeNS(NS.table, 'name') ?? '').toLowerCase() === name.toLowerCase()),
+      value: (s, r, c) => {
+        const el = grids[s]?.cells.get(`${r}:${c}`);
+        return el ? valueOf(el) : null;
+      },
+      formula: (s, r, c) => {
+        const el = grids[s]?.cells.get(`${r}:${c}`);
+        const f = el?.getAttributeNS(NS.table, 'formula');
+        return f && repeatOf(el!, COL_REPEAT) === 1 ? odfToExcel(f) : undefined;
+      },
+      size: (s) => ({ rows: grids[s]?.rows ?? 0, cols: grids[s]?.cols ?? 0 }),
+    };
+    const calc = new Calc(book);
+    const changed: NonNullable<ApplyResult['others']> = [];
+    grids.forEach((g, si) => {
+      for (const [key, el] of g.cells) {
+        const f = el.getAttributeNS(NS.table, 'formula');
+        if (!f || repeatOf(el, COL_REPEAT) !== 1) continue;
+        const [r, c] = key.split(':').map(Number) as [number, number];
+        const v = calc.cell(si, r, c);
+        if (v === UNSUPPORTED) continue;
+        if (setResult(this.pkg.content, el, v) && r < MAX_ROWS && c < MAX_COLS) changed.push({ sheet: si, row: r, col: c, cell: cellView(el) });
+      }
+    });
+    return changed;
   }
 
   async save(): Promise<Uint8Array> {
@@ -164,7 +200,10 @@ function cellView(cell: Element): CellView | null {
   if (!text && !type) return null;
   const view: CellView = { text };
   const formula = cell.getAttributeNS(NS.table, 'formula');
-  if (formula) view.formula = formula.replace(/^(of:)?=/, '');
+  if (formula) {
+    view.formula = odfToExcel(formula);
+    view.input = '=' + view.formula;
+  }
   return view;
 }
 
@@ -239,16 +278,124 @@ function restore(cell: Element, snapshot: Element): void {
   for (const n of Array.from(snapshot.childNodes)) cell.appendChild(n.cloneNode(true));
 }
 
-function writeCell(doc: Document, cell: Element, edit: CellEdit): void {
-  const prefixOf = (ns: string, fallback: string) => {
-    // Use the prefix the document already uses for this namespace.
-    for (const a of Array.from(cell.ownerDocument.documentElement.attributes)) {
-      if (a.value === ns && a.name.startsWith('xmlns:')) return a.name.slice(6);
+/** The prefix the document already uses for a namespace. */
+function prefixOf(doc: Document, ns: string, fallback: string): string {
+  for (const a of Array.from(doc.documentElement.attributes)) {
+    if (a.value === ns && a.name.startsWith('xmlns:')) return a.name.slice(6);
+  }
+  return fallback;
+}
+
+/** Cell elements by "row:col" (repeated cells/rows expanded within the display limits). */
+function indexCells(table: Element): { cells: Map<string, Element>; rows: number; cols: number } {
+  const cells = new Map<string, Element>();
+  let r = 0;
+  let cols = 0;
+  let rows = 0;
+  for (const rowEl of rowElements(table)) {
+    const rrep = repeatOf(rowEl, ROW_REPEAT);
+    let c = 0;
+    const entries: [number, Element][] = [];
+    for (const cell of cellElements(rowEl)) {
+      const crep = repeatOf(cell, COL_REPEAT);
+      if (!isEmptyCell(cell) || cell.getAttributeNS(NS.table, 'formula')) {
+        for (let k = 0; k < crep && c + k < MAX_COLS; k++) entries.push([c + k, cell]);
+      }
+      c += crep;
     }
-    return fallback;
-  };
-  const office = prefixOf(NS.office, 'office');
-  const text = prefixOf(NS.text, 'text');
+    if (entries.length) {
+      for (let k = 0; k < rrep && r + k < MAX_ROWS; k++) {
+        for (const [col, el] of entries) cells.set(`${r + k}:${col}`, el);
+        rows = r + k + 1;
+      }
+      cols = Math.max(cols, entries[entries.length - 1]![0] + 1);
+    }
+    r += rrep;
+  }
+  return { cells, rows, cols };
+}
+
+const DAY_MS = 86400000;
+const EPOCH = Date.UTC(1899, 11, 30);
+
+/** Cell value for the formula engine (cached result for formula cells). */
+function valueOf(cell: Element): Scalar {
+  const type = cell.getAttributeNS(NS.office, 'value-type');
+  const calcType = cell.getAttributeNS(NS.calcext, 'value-type');
+  const text = () => Array.from(cell.childNodes).filter((n): n is Element => isEl(n, NS.text, 'p')).map(odfText).join('\n');
+  if (calcType === 'error') return new FormulaError(text() || '#VALUE!');
+  switch (type) {
+    case 'float':
+    case 'percentage':
+    case 'currency':
+      return Number(cell.getAttributeNS(NS.office, 'value'));
+    case 'boolean':
+      return cell.getAttributeNS(NS.office, 'boolean-value') === 'true';
+    case 'date': {
+      const d = cell.getAttributeNS(NS.office, 'date-value') ?? '';
+      const t = Date.parse(/T/.test(d) ? d + (/Z|[+-]\d\d:\d\d$/.test(d) ? '' : 'Z') : d + 'T00:00:00Z');
+      return Number.isFinite(t) ? (t - EPOCH) / DAY_MS : null;
+    }
+    case 'time': {
+      const m = /^-?PT(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?$/.exec(cell.getAttributeNS(NS.office, 'time-value') ?? '');
+      return m ? (Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0)) / 86400 : null;
+    }
+    case 'string':
+      return cell.getAttributeNS(NS.office, 'string-value') ?? text();
+    default: {
+      const t = text();
+      return t === '' ? null : t;
+    }
+  }
+}
+
+/** Stores a computed result as the cached value of a formula cell; false if it did not change. */
+function setResult(doc: Document, cell: Element, v: Scalar): boolean {
+  const office = prefixOf(doc, NS.office, 'office');
+  const calcext = prefixOf(doc, NS.calcext, '');
+  const oldType = cell.getAttributeNS(NS.office, 'value-type');
+  let type: string;
+  let display: string;
+  const attrs: [string, string][] = [];
+  if (v instanceof FormulaError) {
+    type = 'string';
+    display = v.code;
+  } else if (typeof v === 'boolean') {
+    type = 'boolean';
+    display = v ? 'TRUE' : 'FALSE';
+    attrs.push(['boolean-value', String(v)]);
+  } else if (typeof v === 'string') {
+    type = 'string';
+    display = v;
+  } else {
+    const n = v ?? 0;
+    type = oldType === 'percentage' || oldType === 'currency' ? oldType : 'float';
+    display = type === 'percentage' ? `${general(n * 100)}%` : general(n);
+    attrs.push(['value', String(n)]);
+  }
+  const paras = Array.from(cell.childNodes).filter((n): n is Element => isEl(n, NS.text, 'p'));
+  const oldDisplay = paras.map(odfText).join('\n');
+  const same =
+    oldType === type &&
+    oldDisplay === display &&
+    attrs.every(([k, val]) => cell.getAttributeNS(NS.office, k) === val) &&
+    (v instanceof FormulaError) === (cell.getAttributeNS(NS.calcext, 'value-type') === 'error');
+  if (same) return false;
+  for (const [ns, local] of VALUE_ATTRS) if (local !== 'formula') cell.removeAttributeNS(ns, local);
+  cell.setAttributeNS(NS.office, `${office}:value-type`, type);
+  for (const [k, val] of attrs) cell.setAttributeNS(NS.office, `${office}:${k}`, val);
+  if (calcext) cell.setAttributeNS(NS.calcext, `${calcext}:value-type`, v instanceof FormulaError ? 'error' : type);
+  for (const p of paras) cell.removeChild(p);
+  const para = doc.createElementNS(NS.text, `${prefixOf(doc, NS.text, 'text')}:p`);
+  setOdfText(doc, para, display);
+  cell.appendChild(para);
+  return true;
+}
+
+function writeCell(doc: Document, cell: Element, edit: CellEdit): void {
+  const office = prefixOf(doc, NS.office, 'office');
+  const text = prefixOf(doc, NS.text, 'text');
+  const table = prefixOf(doc, NS.table, 'table');
 
   for (const [ns, local] of VALUE_ATTRS) cell.removeAttributeNS(ns, local);
   const oldType = cell.getAttributeNS(NS.office, 'value-type');
@@ -257,6 +404,13 @@ function writeCell(doc: Document, cell: Element, edit: CellEdit): void {
 
   const v = edit.value;
   if (v === '') return;
+  if (v.startsWith('=') && v.length > 1) {
+    // the result is filled in by the recalculation that follows
+    cell.setAttributeNS(NS.table, `${table}:formula`, excelToOdf(v.slice(1)));
+    cell.setAttributeNS(NS.office, `${office}:value-type`, 'float');
+    cell.setAttributeNS(NS.office, `${office}:value`, '0');
+    return;
+  }
   const para = doc.createElementNS(NS.text, `${text}:p`);
   if (NUMBER.test(v) && !LEADING_ZERO.test(v) && Number.isFinite(Number(v))) {
     const type = oldType === 'percentage' || oldType === 'currency' ? oldType : 'float';

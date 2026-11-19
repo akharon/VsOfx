@@ -1,18 +1,16 @@
 // Types shared by the extension host and the webview. No runtime dependencies.
 import { inverseOp, isPdfEdit, type PdfEdit, type PdfStateJson } from './pdf';
+import { isParaFmt, isTableSpec, type ParaFmt, type TableSpec } from './richtext';
 
-export type CodeLang = 'json' | 'yaml' | 'xml' | 'markdown';
-export type Format = 'docx' | 'xlsx' | 'pptx' | 'odt' | 'ods' | 'pdf' | 'csv' | CodeLang;
+export type CodeLang = 'markdown';
+export type Format = 'docx' | 'xlsx' | 'pptx' | 'odt' | 'ods' | 'odp' | 'odg' | 'pdf' | 'csv' | CodeLang;
 
-export const FORMATS: readonly Format[] = ['docx', 'xlsx', 'pptx', 'odt', 'ods', 'pdf', 'csv', 'json', 'yaml', 'xml', 'markdown'];
+export const FORMATS: readonly Format[] = ['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'odg', 'pdf', 'csv', 'markdown'];
 
 /** File extension -> format. */
 const EXTENSIONS: Record<string, Format> = {
-  docx: 'docx', xlsx: 'xlsx', pptx: 'pptx', odt: 'odt', ods: 'ods', pdf: 'pdf',
+  docx: 'docx', xlsx: 'xlsx', pptx: 'pptx', odt: 'odt', ods: 'ods', odp: 'odp', odg: 'odg', pdf: 'pdf',
   csv: 'csv', tsv: 'csv', tab: 'csv',
-  json: 'json', jsonc: 'json', json5: 'json', geojson: 'json', webmanifest: 'json',
-  yaml: 'yaml', yml: 'yaml',
-  xml: 'xml', xsd: 'xml', xsl: 'xml', xslt: 'xml', svg: 'xml', plist: 'xml', csproj: 'xml', resx: 'xml', xaml: 'xml', config: 'xml',
   md: 'markdown', markdown: 'markdown', mdown: 'markdown', mkd: 'markdown',
 };
 
@@ -22,11 +20,11 @@ export function formatFromPath(path: string): Format | undefined {
   return ext ? EXTENSIONS[ext] : undefined;
 }
 
-export const isCodeLang = (f: Format): f is CodeLang => f === 'json' || f === 'yaml' || f === 'xml' || f === 'markdown';
+export const isCodeLang = (f: Format): f is CodeLang => f === 'markdown';
 export const isTextFormat = (f: Format): boolean => f === 'csv' || isCodeLang(f);
 
 /**
- * Splice of a text document (JSON, YAML, XML, Markdown): at offset `at` (in the
+ * Splice of a text document (Markdown): at offset `at` (in the
  * "\n"-normalised text), `del` is replaced by `ins`. The inverse swaps `del` and `ins`.
  */
 export interface TextEdit {
@@ -71,9 +69,19 @@ export interface ParagraphEdit {
   index: number;
   text: string;
   old: string;
+  /** Word only: formatted content (runs, block kind) after and before the edit. */
+  fmt?: ParaFmt;
+  oldFmt?: ParaFmt;
 }
 
-export type Edit = CellEdit | ParagraphEdit | PdfEdit | TextEdit;
+/** Word only: a table inserted after a paragraph (or removed again: the inverse). */
+export interface TableEdit {
+  kind: 'table';
+  op: 'insert' | 'remove';
+  table: TableSpec;
+}
+
+export type Edit = CellEdit | ParagraphEdit | PdfEdit | TextEdit | TableEdit;
 
 /** Runtime check for messages coming from the webview (the host does not trust them). */
 export function isEdit(x: unknown): x is Edit {
@@ -86,8 +94,15 @@ export function isEdit(x: unknown): x is Edit {
   if (e['kind'] === 'pdf') return isPdfEdit(x);
   if (e['kind'] === 'text') return int(e['at']) && typeof e['del'] === 'string' && typeof e['ins'] === 'string';
   if (e['kind'] === 'paragraph') {
-    return int(e['index']) && typeof e['text'] === 'string' && typeof e['old'] === 'string';
+    return (
+      int(e['index']) &&
+      typeof e['text'] === 'string' &&
+      typeof e['old'] === 'string' &&
+      (e['fmt'] === undefined || isParaFmt(e['fmt'])) &&
+      (e['oldFmt'] === undefined || isParaFmt(e['oldFmt']))
+    );
   }
+  if (e['kind'] === 'table') return (e['op'] === 'insert' || e['op'] === 'remove') && isTableSpec(e['table']);
   return false;
 }
 
@@ -95,7 +110,12 @@ export function isEdit(x: unknown): x is Edit {
 export function inverseEdit(e: Edit): Edit {
   if (e.kind === 'pdf') return { kind: 'pdf', op: inverseOp(e.op) };
   if (e.kind === 'text') return { kind: 'text', at: e.at, del: e.ins, ins: e.del };
-  return e.kind === 'cell' ? { ...e, value: e.old, old: e.value } : { ...e, text: e.old, old: e.text };
+  if (e.kind === 'table') return { ...e, op: e.op === 'insert' ? 'remove' : 'insert' };
+  if (e.kind === 'cell') return { ...e, value: e.old, old: e.value };
+  const inv: ParagraphEdit = { kind: 'paragraph', index: e.index, text: e.old, old: e.text };
+  if (e.oldFmt) inv.fmt = e.oldFmt;
+  if (e.fmt) inv.oldFmt = e.fmt;
+  return inv;
 }
 
 // ---- view models (produced by adapters in the worker, rendered by views) ----
@@ -148,6 +168,10 @@ export interface TextModel {
   type: 'text';
   /** Sanitized HTML; editable blocks carry `data-p="<paragraph index>"`. */
   html: string;
+  /** Word: formatting (bold, lists, links, tables ...) can be edited. */
+  rich?: boolean;
+  /** Word: tables inserted by (replayed) edits, with the HTML of each cell (row-major). */
+  tables?: { table: TableSpec; cells: string[] }[];
 }
 
 export interface SlideView {
@@ -160,6 +184,8 @@ export interface SlideView {
 
 export interface SlidesModel {
   type: 'slides';
+  /** 'drawing' for .odg (pages instead of slides). */
+  kind?: 'presentation' | 'drawing';
   slides: SlideView[];
 }
 
@@ -176,12 +202,20 @@ export interface CodeModel {
   text: string;
 }
 
+/** One file of the document as text, for the Source view. */
+export interface SourcePart {
+  name: string;
+  text: string;
+}
+
 export type DocModel = TextModel | SheetModel | SlidesModel | PdfModel | CodeModel;
 
 /** Result of applying an edit in the worker. */
 export interface ApplyResult {
   /** Updated cell after a cell edit (formatted text may differ from the input). */
   cell?: CellView | null;
+  /** Other cells whose formula results changed because of the edit. */
+  others?: { sheet: number; row: number; col: number; cell: CellView | null }[];
 }
 
 /** Display limits for spreadsheets. */

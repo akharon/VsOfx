@@ -2,6 +2,7 @@
 // emits a *new* HTML string containing only allowed elements and attributes
 // (doc/arch42.md §8.1 item 4). Works on xmldom trees, so it runs in the worker.
 import { DOMParser } from '@xmldom/xmldom';
+import { SAFE_HREF } from '../shared/richtext';
 
 const ALLOWED_TAGS = new Set([
   'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'u', 's', 'sub', 'sup',
@@ -20,6 +21,8 @@ export interface SanitizeHooks {
   attrs?(el: Element, tag: string): Record<string, string> | undefined;
   /** If it returns a string, the element's content is replaced by that plain text. */
   textOverride?(el: Element, tag: string): string | undefined;
+  /** If it returns a string, the element's content is replaced by that HTML (must already be safe). */
+  htmlOverride?(el: Element, tag: string): string | undefined;
 }
 
 export function escapeHtml(s: string): string {
@@ -69,7 +72,12 @@ function sanitizeNode(node: Node, hooks: SanitizeHooks): string {
   if (!ALLOWED_TAGS.has(tag)) return sanitizeChildren(el, hooks); // unwrap
   if (tag === 'a') {
     const href = el.getAttribute('href') ?? '';
-    // Only in-document anchors survive; external links are rendered as plain text.
+    // In-document anchors keep their href. Safe external links (http, https, mailto) are kept
+    // only as an inert data-href (shown and editable, never followed); anything else becomes text.
+    if (SAFE_HREF.test(href)) {
+      const ov = hooks.htmlOverride?.(el, tag);
+      return `<a data-href="${escapeHtml(href)}">${ov ?? sanitizeChildren(el, hooks)}</a>`;
+    }
     if (!/^#[\w.:-]*$/.test(href)) return sanitizeChildren(el, hooks);
   }
   if (tag === 'img' && !DATA_IMAGE.test((el.getAttribute('src') ?? '').trim())) return '';
@@ -91,7 +99,8 @@ function sanitizeNode(node: Node, hooks: SanitizeHooks): string {
   if (extra) for (const [k, v] of Object.entries(extra)) add(k, v);
 
   if (VOID_TAGS.has(tag)) return `<${tag}${attrs}>`;
-  const override = hooks.textOverride?.(el, tag);
-  const inner = override !== undefined ? escapeHtml(override) : sanitizeChildren(el, hooks);
+  const html = hooks.htmlOverride?.(el, tag);
+  const override = html === undefined ? hooks.textOverride?.(el, tag) : undefined;
+  const inner = html ?? (override !== undefined ? escapeHtml(override) : sanitizeChildren(el, hooks));
   return `<${tag}${attrs}>${inner}</${tag}>`;
 }

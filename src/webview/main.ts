@@ -5,7 +5,7 @@ import workerBase64 from 'virtual:worker-bytes';
 import pdfWorkerBase64 from 'virtual:pdf-worker-bytes';
 import { fromByteArray, toByteArray } from '../shared/base64';
 import type { HostMessage, WebviewMessage } from '../shared/messages';
-import type { ApplyResult, DocModel, Edit } from '../shared/model';
+import type { ApplyResult, DocModel, Edit, SourcePart } from '../shared/model';
 import type { LoadResult, WorkerRequest, WorkerResponse } from './protocol';
 import { createToolbar } from './ui/toolbar';
 import { renderCodeView } from './views/codeView';
@@ -109,6 +109,7 @@ function showError(message: string): void {
 
 function render(model: DocModel, readonly: boolean): void {
   view?.dispose();
+  refreshSource = undefined;
   app.replaceChildren();
   const onEdit = (edit: Edit) => void userEdit(edit);
   const tb = createToolbar();
@@ -144,6 +145,66 @@ function render(model: DocModel, readonly: boolean): void {
       break;
     }
   }
+  // Markdown has its own (editable) Source mode; every other format gets a read-only one.
+  if (model.type !== 'code') addSourceToggle(tb, content);
+}
+
+// ---- Source view (read-only file content) -----------------------------------
+
+let refreshSource: (() => void) | undefined;
+
+function addSourceToggle(tb: ReturnType<typeof createToolbar>, content: HTMLElement): void {
+  const panel = document.createElement('div');
+  panel.className = 'source-view';
+  panel.hidden = true;
+  const bar = document.createElement('div');
+  bar.className = 'source-bar';
+  const select = document.createElement('select');
+  select.setAttribute('aria-label', 'File part');
+  const note = document.createElement('span');
+  note.className = 'muted';
+  note.textContent = 'Read-only: the file as it would be saved now.';
+  bar.append(select, note);
+  const pre = document.createElement('pre');
+  pre.className = 'source-text';
+  pre.tabIndex = 0;
+  panel.append(bar, pre);
+  content.after(panel);
+
+  let parts: SourcePart[] = [];
+  let on = false;
+  let timer = 0;
+  const show = () => {
+    const p = parts.find((x) => x.name === select.value) ?? parts[0];
+    pre.textContent = p?.text ?? '';
+  };
+  select.addEventListener('change', show);
+  const load = async () => {
+    try {
+      parts = await rpc<SourcePart[]>({ op: 'source' });
+    } catch (err) {
+      parts = [{ name: 'Error', text: message(err) }];
+    }
+    const keep = select.value;
+    select.replaceChildren(...parts.map((p) => new Option(p.name, p.name)));
+    select.hidden = parts.length < 2;
+    if (parts.some((p) => p.name === keep)) select.value = keep;
+    const y = pre.scrollTop;
+    show();
+    pre.scrollTop = y;
+  };
+  refreshSource = () => {
+    if (!on) return;
+    if (timer) clearTimeout(timer);
+    timer = window.setTimeout(() => void load(), 300);
+  };
+  if (!tb.el.querySelector('.tb-spacer')) tb.spacer();
+  tb.toggle('Source', 'Show the file source', (v) => {
+    on = v;
+    content.hidden = v;
+    panel.hidden = !v;
+    if (v) void load();
+  }, 'code');
 }
 
 async function userEdit(edit: Edit): Promise<void> {
@@ -163,6 +224,7 @@ async function userEdit(edit: Edit): Promise<void> {
     const result = await rpc<ApplyResult>({ op: 'apply', edit });
     view?.applyEdit(edit, result);
     post({ type: 'edit', edit });
+    refreshSource?.();
   } catch (err) {
     showError(`The edit could not be applied: ${message(err)}`);
     post({ type: 'error', message: message(err) });
@@ -202,6 +264,7 @@ async function onInit(msg: Extract<HostMessage, { type: 'init' }>): Promise<void
 async function hostEdit(edit: Edit): Promise<void> {
   try {
     view?.applyEdit(edit, await rpc<ApplyResult>({ op: 'apply', edit }));
+    refreshSource?.();
   } catch (err) {
     post({ type: 'error', message: message(err) });
   }

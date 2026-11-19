@@ -3,23 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { applyTextEdit, diffText, formatFromPath, inverseEdit, isEdit, type CodeModel, type Edit, type SheetModel, type TextEdit } from '../src/shared/model.ts';
 import { CodeAdapter } from '../src/webview/adapters/codeAdapter.ts';
 import { CsvAdapter, detectDelimiter } from '../src/webview/adapters/csvAdapter.ts';
-import { formatJson, jsonTree } from '../src/webview/code/jsonTree.ts';
 import { renderMarkdown, setHeading, toggleWrap, togglePrefix } from '../src/webview/code/markdown.ts';
-import { spliceSpan, type TreeNode } from '../src/webview/code/tree.ts';
-import { xmlTree } from '../src/webview/code/xmlTree.ts';
-import { yamlTree } from '../src/webview/code/yamlTree.ts';
 import { createToolbar } from '../src/webview/ui/toolbar.ts';
 import { renderCodeView } from '../src/webview/views/codeView.ts';
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
-/** Finds a node by its label path, e.g. find(roots, 'a', 'b'). */
-function find(nodes: TreeNode[], ...labels: string[]): TreeNode {
-  let cur: TreeNode | undefined = { id: '', kind: 'object', label: '', at: 0, children: nodes };
-  for (const l of labels) cur = cur?.children?.find((c) => c.label === l);
-  if (!cur) throw new Error(`no node ${labels.join('/')}`);
-  return cur;
-}
 
 describe('text edits', () => {
   it('diff, apply and inverse round-trip', () => {
@@ -39,10 +28,10 @@ describe('text edits', () => {
   });
 
   it('maps file extensions', () => {
-    expect(formatFromPath('/a/b.YML')).toBe('yaml');
+    expect(formatFromPath('/a/b.yml')).toBeUndefined();
     expect(formatFromPath('x.tsv')).toBe('csv');
     expect(formatFromPath('README.md')).toBe('markdown');
-    expect(formatFromPath('a.svg')).toBe('xml');
+    expect(formatFromPath('a.json')).toBeUndefined();
     expect(formatFromPath('a.txt')).toBeUndefined();
   });
 });
@@ -50,13 +39,13 @@ describe('text edits', () => {
 describe('CodeAdapter', () => {
   it('saves untouched files byte for byte', async () => {
     const bytes = enc('﻿{"a": 1}\r\n');
-    const a = new CodeAdapter('json');
+    const a = new CodeAdapter('markdown');
     await a.load(bytes, []);
     expect(await a.save()).toBe(bytes);
   });
 
   it('keeps BOM and CRLF line ends, replays edits', async () => {
-    const a = new CodeAdapter('yaml');
+    const a = new CodeAdapter('markdown');
     const edit: Edit = { kind: 'text', at: 3, del: '1', ins: '2' };
     const model = (await a.load(enc('﻿a: 1\r\nb: x\r\n'), [edit])) as CodeModel;
     expect(model.text).toBe('a: 2\nb: x\n');
@@ -71,7 +60,7 @@ describe('CodeAdapter', () => {
     const bytes = new Uint8Array(2 + s.length * 2);
     bytes.set([0xff, 0xfe]);
     for (let i = 0; i < s.length; i++) bytes[2 + i * 2] = s.charCodeAt(i) & 0xff;
-    const a = new CodeAdapter('yaml');
+    const a = new CodeAdapter('markdown');
     expect(((await a.load(bytes, [])) as CodeModel).text).toBe(s);
     a.applyEdit({ kind: 'text', at: 3, del: 'Ö', ins: 'Ü' });
     const out = await a.save();
@@ -111,100 +100,6 @@ describe('CsvAdapter', () => {
   });
 });
 
-describe('JSON tree', () => {
-  const src = '{\n  // settings\n  "name": "VsOfx",\n  "count": 3,\n  "tags": ["a", "b"],\n  "deep": { "on": true }\n}\n';
-
-  it('edits values and keys in place, keeping comments', () => {
-    const t = jsonTree(src);
-    expect(t.problems).toEqual([]);
-    const name = find(t.roots, '(root)', 'name');
-    let out = spliceSpan(src, name.valueSpan!, 'Say "hi"');
-    expect(out).toContain('"name": "Say \\"hi\\""');
-    expect(out).toContain('// settings');
-    out = spliceSpan(src, find(t.roots, '(root)', 'count').valueSpan!, '42');
-    expect(JSON.parse(out.replace('// settings', '')).count).toBe(42);
-    out = spliceSpan(src, find(t.roots, '(root)', 'count').valueSpan!, 'not a number');
-    expect(out).toContain('"count": "not a number"');
-    out = spliceSpan(src, find(t.roots, '(root)', 'deep').labelSpan!, 'deeper');
-    expect(out).toContain('"deeper": { "on": true }');
-  });
-
-  it('removes and adds entries', () => {
-    const t = jsonTree(src);
-    const removed = find(t.roots, '(root)', 'tags').remove!()!;
-    expect(removed).not.toContain('tags');
-    expect(jsonTree(removed).problems).toEqual([]);
-    const added = find(t.roots, '(root)', 'tags').add!()!;
-    expect(JSON.parse(added.replace('// settings', '')).tags).toEqual(['a', 'b', '']);
-    const withKey = find(t.roots, '(root)').add!()!;
-    expect(JSON.parse(withKey.replace('// settings', '')).key).toBe('');
-  });
-
-  it('reports syntax errors and formats', () => {
-    expect(jsonTree('{"a": }').problems.length).toBeGreaterThan(0);
-    expect(formatJson('{"a":[1,2]}')).toBe('{\n  "a": [\n    1,\n    2\n  ]\n}');
-  });
-});
-
-describe('YAML tree', () => {
-  const src = '# config\nname: VsOfx # inline\nport: 8080\nlist:\n  - one\n  - two\nnested:\n  flag: true\n';
-
-  it('edits scalars keeping comments and types', () => {
-    const t = yamlTree(src);
-    expect(t.problems).toEqual([]);
-    let out = spliceSpan(src, find(t.roots, '(root)', 'name').valueSpan!, 'New name');
-    expect(out).toContain('name: New name # inline');
-    out = spliceSpan(src, find(t.roots, '(root)', 'name').valueSpan!, 'yes: really');
-    expect(out).toContain('name: "yes: really" # inline');
-    out = spliceSpan(src, find(t.roots, '(root)', 'port').valueSpan!, '9090');
-    expect(out).toContain('port: 9090\n');
-    out = spliceSpan(src, find(t.roots, '(root)', 'name').valueSpan!, '123');
-    expect(out).toContain('name: "123"'); // stays a string
-  });
-
-  it('removes and adds items with the right indentation', () => {
-    const t = yamlTree(src);
-    expect(find(t.roots, '(root)', 'list', '0').remove!()).toBe(src.replace('  - one\n', ''));
-    expect(find(t.roots, '(root)', 'port').remove!()).toBe(src.replace('port: 8080\n', ''));
-    expect(find(t.roots, '(root)', 'list').add!()).toContain("  - two\n  - ''\n");
-    expect(find(t.roots, '(root)', 'nested').add!()).toContain("  flag: true\n  key: ''\n");
-  });
-
-  it('reports errors', () => {
-    expect(yamlTree('a: [1, 2\nb: 3\n').problems.length).toBeGreaterThan(0);
-  });
-});
-
-describe('XML tree', () => {
-  const src = '<?xml version="1.0"?>\n<root id="1">\n  <!-- c -->\n  <name lang="de">Müller &amp; Co</name>\n  <empty/>\n  <list>\n    <item>a</item>\n  </list>\n</root>\n';
-
-  it('edits text and attributes with escaping', () => {
-    const t = xmlTree(src);
-    expect(t.problems).toEqual([]);
-    const name = find(t.roots, 'root', 'name');
-    expect(name.value).toBe('Müller & Co');
-    let out = spliceSpan(src, name.valueSpan!, 'A < B & C');
-    expect(out).toContain('<name lang="de">A &lt; B &amp; C</name>');
-    out = spliceSpan(src, find(t.roots, 'root', 'name', '@lang').valueSpan!, 'say "x"');
-    expect(out).toContain('<name lang="say &quot;x&quot;">');
-    out = spliceSpan(src, find(t.roots, 'root', 'empty').valueSpan!, 'filled');
-    expect(out).toContain('<empty>filled</empty>');
-    expect(out).toContain('<!-- c -->');
-  });
-
-  it('removes elements and attributes', () => {
-    const t = xmlTree(src);
-    expect(find(t.roots, 'root', 'empty').remove!()).toBe(src.replace('  <empty/>\n', ''));
-    expect(find(t.roots, 'root', '@id').remove!()).toContain('<root>');
-    expect(find(t.roots, 'root', 'list').add!()).toContain('<list name="">');
-  });
-
-  it('reports malformed XML', () => {
-    expect(xmlTree('<a><b></a>').problems.length).toBeGreaterThan(0);
-    expect(xmlTree('<a>').problems[0]!.message).toMatch(/not closed/);
-  });
-});
-
 describe('Markdown', () => {
   it('renders safely: no raw HTML, no script links, task lists', () => {
     const el = document.createElement('div');
@@ -227,22 +122,21 @@ describe('Markdown', () => {
 });
 
 describe('code view', () => {
-  it('a tree edit emits a minimal text edit and updates the source', () => {
+  it('a formatting button emits a minimal text edit; host undo reverts it', () => {
     document.body.innerHTML = '<div id="root"></div>';
     const root = document.getElementById('root')!;
     const edits: Edit[] = [];
     const tb = createToolbar();
-    const view = renderCodeView(root, { type: 'code', lang: 'json', text: '{\n  "a": 1\n}\n' }, false, (e) => edits.push(e), tb);
-    const input = root.querySelector<HTMLInputElement>('.tn-val')!;
-    expect(input.value).toBe('1');
-    input.value = '2';
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-    expect(edits).toEqual([{ kind: 'text', at: 9, del: '1', ins: '2' }]);
-    expect(root.querySelector<HTMLTextAreaElement>('.src-text')!.value).toBe('{\n  "a": 2\n}\n');
-    // the host undoes it
+    const view = renderCodeView(root, { type: 'code', lang: 'markdown', text: 'a word b' }, false, (e) => edits.push(e), tb);
+    tb.el.querySelector<HTMLButtonElement>('[aria-label="Source"]')!.click();
+    const ta = root.querySelector<HTMLTextAreaElement>('.src-text')!;
+    ta.setSelectionRange(2, 6);
+    tb.el.querySelector<HTMLButtonElement>('[title^="Bold"]')!.click();
+    expect(ta.value).toBe('a **word** b');
+    expect(edits).toEqual([{ kind: 'text', at: 2, del: 'word', ins: '**word**' }]);
     view.applyEdit(edits[0]!, {}); // own edit echoed: ignored
     view.applyEdit(inverseEdit(edits[0]!), {});
-    expect(root.querySelector<HTMLTextAreaElement>('.src-text')!.value).toBe('{\n  "a": 1\n}\n');
+    expect(ta.value).toBe('a word b');
     view.dispose();
   });
 
@@ -250,13 +144,67 @@ describe('code view', () => {
     document.body.innerHTML = '<div id="root"></div>';
     const root = document.getElementById('root')!;
     const edits: Edit[] = [];
-    const view = renderCodeView(root, { type: 'code', lang: 'markdown', text: 'Hello' }, false, (e) => edits.push(e), createToolbar());
+    const tb = createToolbar();
+    const view = renderCodeView(root, { type: 'code', lang: 'markdown', text: 'Hello' }, false, (e) => edits.push(e), tb);
+    tb.el.querySelector<HTMLButtonElement>('[aria-label="Source"]')!.click();
     const ta = root.querySelector<HTMLTextAreaElement>('.src-text')!;
     ta.value = 'Hello world';
     ta.dispatchEvent(new Event('input'));
     expect(edits).toEqual([]);
     view.flush!();
     expect(edits).toEqual([{ kind: 'text', at: 5, del: '', ins: ' world' }]);
+    view.dispose();
+  });
+});
+
+describe('Markdown WYSIWYG', () => {
+  const setup = (text: string) => {
+    document.body.innerHTML = '<div id="root"></div>';
+    try {
+      localStorage.removeItem('vsofx.mode.markdown');
+    } catch {
+      /* ignore */
+    }
+    const root = document.getElementById('root')!;
+    const edits: Edit[] = [];
+    const view = renderCodeView(root, { type: 'code', lang: 'markdown', text }, false, (e) => edits.push(e), createToolbar());
+    return { root, edits, view, body: root.querySelector<HTMLElement>('.md-body')! };
+  };
+
+  it('opens as an editable document, not as source', () => {
+    const { root, body, view } = setup('# Title\n');
+    expect(body.isContentEditable || body.getAttribute('contenteditable') === 'true').toBe(true);
+    expect((root.querySelector('.code-layout') as HTMLElement).dataset['mode']).toBe('visual');
+    view.dispose();
+  });
+
+  it('editing one block rewrites only that block', () => {
+    const src = '# Title\n\nSome  *text*  here.\n\n* one\n* two\n';
+    const { body, edits, view } = setup(src);
+    body.querySelector('h1')!.textContent = 'New title';
+    view.flush!();
+    expect(edits).toHaveLength(1);
+    expect(applyTextEdit(src, edits[0] as TextEdit)).toBe('# New title\n\nSome  *text*  here.\n\n* one\n* two\n');
+    view.dispose();
+  });
+
+  it('serializes formatting typed in the editor', () => {
+    const src = 'Para\n';
+    const { body, edits, view } = setup(src);
+    body.querySelector('p')!.innerHTML = 'A <b>bold</b> and <i>italic</i> <code>x</code> <a href="https://e.com">link</a>';
+    view.flush!();
+    expect(applyTextEdit(src, edits[0] as TextEdit)).toBe('A **bold** and _italic_ `x` [link](https://e.com)\n');
+    view.dispose();
+  });
+
+  it('new paragraphs and lists are added with blank lines', () => {
+    const src = 'First\n';
+    const { body, edits, view } = setup(src);
+    const ul = document.createElement('ul');
+    ul.innerHTML = '<li>a</li><li>b</li>';
+    body.append(ul);
+    view.flush!();
+    expect(applyTextEdit(src, edits[0] as TextEdit)).toBe('First\n\n- a\n- b\n');
     view.dispose();
   });
 });
