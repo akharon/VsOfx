@@ -10,6 +10,11 @@ View and lightly edit Office documents and PDF forms without leaving the editor.
 | `.ods` | cell values (formulas show cached results) | cell values |
 | `.pptx` | slide text, notes, first picture per slide | read-only |
 | `.pdf` | pages, selectable text, form fields | fill and add form fields, move/resize/delete fields, add text, rotate/delete pages |
+| `.csv` `.tsv` | table (delimiter `,` `;` tab `\|` detected automatically) | cell values; delimiter, quoting, line ends and encoding are kept |
+| `.json` `.yaml` `.xml` | editable tree + source side by side, problems list | values, keys, add/remove entries, source text; comments and formatting are kept |
+| `.md` | live preview + source, formatting buttons, clickable task lists | source text |
+
+CSV opens in VsOfx by default. JSON, YAML, XML and Markdown keep VS Code's text editor as default: use **VsOfx: Open in Visual Editor** (editor title button or Explorer context menu) or *Reopen Editor With… → VsOfx Visual Editor*. To make it the default, add e.g. `"workbench.editorAssociations": { "*.yaml": "vsofx.dataEditor" }`.
 
 Editing replaces a paragraph's text and keeps the paragraph style and the formatting of its first run. Other runs of that paragraph lose their individual formatting. Everything else in the file is saved unchanged.
 
@@ -31,7 +36,7 @@ Limits: only Latin (WinAnsi) characters can be saved into fields and printed tex
 
 ## Security: no network, enforced
 
-Third-party libraries (`exceljs`, `mammoth`, `fflate`, `@xmldom/xmldom`, `pdfjs-dist`, `@cantoo/pdf-lib`) run **only inside a VS Code webview worker**, never in the extension host:
+Third-party libraries (`exceljs`, `mammoth`, `fflate`, `@xmldom/xmldom`, `pdfjs-dist`, `@cantoo/pdf-lib`, `papaparse`, `jsonc-parser`, `yaml`, `markdown-it`) run **only inside the VS Code webview** (worker or webview page), never in the extension host:
 
 - The webview has a strict Content-Security-Policy: `default-src 'none'`, `connect-src 'none'`, no `eval`, scripts only with a nonce.
 - The extension host contains only our own code (read/write bytes, undo, backup).

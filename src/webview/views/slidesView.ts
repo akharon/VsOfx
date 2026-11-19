@@ -14,7 +14,8 @@ export function renderSlidesView(container: HTMLElement, model: SlidesModel, tb:
   container.append(banner, list);
 
   const finder = createFindBar(tb.extra, domFinder(list));
-  tb.button('Find', 'Find in presentation (Ctrl+F)', () => finder.toggle());
+  tb.button('', 'Find in presentation (Ctrl+F)', () => finder.toggle(), 'search');
+  tb.separator();
   addZoom(tb, (z) => list.style.setProperty('--zoom', String(z)));
   const onFind = (ev: KeyboardEvent) => {
     if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === 'f') {
@@ -33,7 +34,13 @@ export function renderSlidesView(container: HTMLElement, model: SlidesModel, tb:
     const card = document.createElement('section');
     card.className = 'slide';
     const head = document.createElement('h2');
-    head.textContent = `${slide.number}. ${slide.title || '(untitled)'}`;
+    const num = document.createElement('span');
+    num.className = 'slide-num';
+    num.textContent = String(slide.number);
+    const title = document.createElement('span');
+    title.textContent = slide.title || 'Untitled slide';
+    if (!slide.title) title.className = 'muted';
+    head.append(num, title);
     card.appendChild(head);
     if (slide.paragraphs.length) {
       const ul = document.createElement('ul');

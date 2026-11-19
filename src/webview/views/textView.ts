@@ -45,7 +45,8 @@ export function renderTextView(
 
   // ---- toolbar: find, zoom, navigation pane, formatting marks, word count ----
   const finder = createFindBar(tb.extra, domFinder(page));
-  tb.button('Find', 'Find in document (Ctrl+F)', () => finder.toggle());
+  tb.button('', 'Find in document (Ctrl+F)', () => finder.toggle(), 'search');
+  tb.separator();
   addZoom(tb, (z) => layout.style.setProperty('--zoom', String(z)));
   tb.separator();
   let navOpen = false;
@@ -53,8 +54,8 @@ export function renderTextView(
     navOpen = on;
     nav.hidden = !on;
     if (on) buildNav();
-  });
-  tb.toggle('¶', 'Show formatting marks (paragraph ends)', (on) => page.classList.toggle('marks', on));
+  }, 'outline');
+  tb.toggle('', 'Show formatting marks (paragraph ends)', (on) => page.classList.toggle('marks', on), 'pilcrow');
   const counter = tb.info();
 
   function buildNav() {

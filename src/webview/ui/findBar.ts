@@ -1,3 +1,5 @@
+import { icon, type IconName } from './toolbar';
+
 /** Something that can be searched: a document, a sheet ... */
 export interface FindTarget {
   /** Runs a search and returns the number of matches. */
@@ -26,10 +28,11 @@ export function createFindBar(slot: HTMLElement, target: FindTarget): FindBar {
   const status = document.createElement('span');
   status.className = 'find-status';
   status.setAttribute('aria-live', 'polite');
-  const mk = (label: string, title: string, fn: () => void) => {
+  const mk = (ic: IconName, title: string, fn: () => void) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = label;
+    b.className = 'tb-btn icon-only';
+    b.appendChild(icon(ic));
     b.title = title;
     b.setAttribute('aria-label', title);
     b.addEventListener('click', fn);
@@ -77,7 +80,13 @@ export function createFindBar(slot: HTMLElement, target: FindTarget): FindBar {
       close();
     }
   });
-  bar.append(input, mk('↑', 'Previous match', () => step(-1)), mk('↓', 'Next match', () => step(1)), status, mk('✕', 'Close', close));
+  bar.append(
+    input,
+    status,
+    mk('arrowUp', 'Previous match (Shift+Enter)', () => step(-1)),
+    mk('arrowDown', 'Next match (Enter)', () => step(1)),
+    mk('close', 'Close (Escape)', close),
+  );
   slot.appendChild(bar);
 
   return {

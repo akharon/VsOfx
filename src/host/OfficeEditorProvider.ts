@@ -29,6 +29,8 @@ interface PendingSave {
  */
 export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeDocument> {
   static readonly viewType = 'vsofx.officeEditor';
+  /** Same editor for JSON, YAML, XML and Markdown; registered as an *option* so VS Code's text editor stays the default. */
+  static readonly dataViewType = 'vsofx.dataEditor';
 
   private readonly _onDidChange = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<OfficeDocument>>();
   readonly onDidChangeCustomDocument = this._onDidChange.event;
@@ -332,6 +334,7 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
 
 function editLabel(edit: Edit): string {
   if (edit.kind === 'pdf') return pdfEditLabel(edit.op);
+  if (edit.kind === 'text') return edit.del === '' ? 'Insert text' : edit.ins === '' ? 'Delete text' : 'Edit text';
   return edit.kind === 'cell' ? 'Edit cell' : 'Edit paragraph';
 }
 

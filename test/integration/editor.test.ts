@@ -163,6 +163,37 @@ describe('VsOfx in VS Code', function () {
     assert.strictEqual((saved.getForm().getField('name') as PDFTextField).getText(), 'Filled in VS Code');
   });
 
+  async function textEditSave(name: string, content: string, viewType: string, edit: Edit, expected: string) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vsofx-'));
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, content);
+    const uri = vscode.Uri.file(file);
+    const errorsBefore = api.errors.length;
+    await vscode.commands.executeCommand('vscode.openWith', uri, viewType);
+    await until(
+      () => vscode.window.tabGroups.all.flatMap((g) => g.tabs).some((t) => t.input instanceof vscode.TabInputCustom && t.input.uri.toString() === uri.toString()),
+      `${name} tab`,
+    );
+    await sleep(1500);
+    api.injectEdit(uri, edit);
+    await sleep(500);
+    await vscode.commands.executeCommand('workbench.action.files.save');
+    await until(() => fs.readFileSync(file, 'utf8') === expected || false, `saved ${name}: ${JSON.stringify(fs.readFileSync(file, 'utf8'))}`, 10_000);
+    assert.deepStrictEqual(api.errors.slice(errorsBefore), [], `no errors for ${name}`);
+  }
+
+  it('csv: auto-detected delimiter, cell edit + save keeps the format', async () => {
+    await textEditSave('t.csv', 'a;b\r\n1;2\r\n', VIEW_TYPE, { kind: 'cell', sheet: 0, row: 1, col: 1, value: 'x;y', old: '2' }, 'a;b\r\n1;"x;y"\r\n');
+  });
+
+  it('json / yaml / xml / markdown: visual editor, text edit + save', async () => {
+    const DATA = 'vsofx.dataEditor';
+    await textEditSave('t.json', '{\r\n  "a": 1 // c\r\n}\r\n', DATA, { kind: 'text', at: 9, del: '1', ins: '2' }, '{\r\n  "a": 2 // c\r\n}\r\n');
+    await textEditSave('t.yaml', 'a: 1\n', DATA, { kind: 'text', at: 3, del: '1', ins: 'two' }, 'a: two\n');
+    await textEditSave('t.xml', '<a>1</a>', DATA, { kind: 'text', at: 3, del: '1', ins: '&amp;' }, '<a>&amp;</a>');
+    await textEditSave('t.md', '# Hi\n', DATA, { kind: 'text', at: 4, del: '', ins: ' there' }, '# Hi there\n');
+  });
+
   it('a file that is not an Office package shows the error panel and stays untouched', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vsofx-'));
     const file = path.join(dir, 'fake.docx');

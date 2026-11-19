@@ -13,7 +13,7 @@ import {
   type TextSpec,
 } from '../../shared/pdf';
 import { createFindBar, domFinder } from '../ui/findBar';
-import { addZoom, type Toolbar } from '../ui/toolbar';
+import { addZoom, icon, type IconName, type Toolbar } from '../ui/toolbar';
 import type { EditHandler, View } from './types';
 
 /** A form control to draw, from an original widget or a field the user added. */
@@ -81,6 +81,7 @@ export function renderPdfView(
   let zoom = 1;
   let designMode = false;
   let placing: Placing = null;
+  let placeButtons: HTMLButtonElement[] = [];
   let selected: string | null = null;
   let currentPage = 0;
   let textGen = 0;
@@ -106,38 +107,77 @@ export function renderPdfView(
   const rectOf = (id: string, fallback: Rect): Rect => state.rects.get(id) ?? fallback;
 
   // ---- toolbar ----
-  const info = tb.info();
   const finder = createFindBar(tb.extra, domFinder(pagesEl));
-  tb.button('Find', 'Find in document (Ctrl+F)', () => finder.toggle());
+  tb.button('', 'Find in document (Ctrl+F)', () => finder.toggle(), 'search');
+  tb.separator();
+  // page navigator: ‹ [ 3 ] / 12 ›
+  const nav = document.createElement('span');
+  nav.className = 'tb-group pager';
+  const prev = tb.button('', 'Previous page', () => goTo(currentPage - 1), 'chevronLeft');
+  const pageInput = document.createElement('input');
+  pageInput.className = 'page-input';
+  pageInput.inputMode = 'numeric';
+  pageInput.setAttribute('aria-label', 'Page number');
+  pageInput.value = '1';
+  const pageTotal = document.createElement('span');
+  pageTotal.className = 'page-total';
+  const next = tb.button('', 'Next page', () => goTo(currentPage + 1), 'chevronRight');
+  prev.before(nav);
+  nav.append(prev, pageInput, pageTotal, next);
+  pageInput.addEventListener('focus', () => pageInput.select());
+  pageInput.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      const n = Number.parseInt(pageInput.value, 10);
+      if (Number.isFinite(n)) goTo(n - 1);
+      pageInput.blur();
+    } else if (ev.key === 'Escape') pageInput.blur();
+  });
+  pageInput.addEventListener('blur', () => updateInfo());
+  tb.separator();
   addZoom(tb, (z) => {
     zoom = z;
     layoutAll();
   });
-  tb.button('◀', 'Previous page', () => goTo(currentPage - 1));
-  tb.button('▶', 'Next page', () => goTo(currentPage + 1));
   if (!readonly) {
     tb.separator();
-    const design = tb.toggle('Design', 'Edit the form: select, move, resize and delete fields', (on) => setDesign(on));
-    const place = (label: string, title: string, kind: Exclude<Placing, null>) =>
-      tb.button(label, title, () => {
-        placing = kind;
-        if (!designMode) design.click();
-        scroller.classList.add('placing');
-        info.textContent = 'Click on the page to place it';
-      });
-    place('＋ Text field', 'Add a text field, then click on the page', 'text');
-    place('＋ Checkbox', 'Add a checkbox, then click on the page', 'checkbox');
-    place('＋ Dropdown', 'Add a dropdown list, then click on the page', 'dropdown');
-    place('＋ Text', 'Add fixed text to the page (printed into the page)', 'freetext');
-    tb.separator();
-    tb.button('Rotate page', 'Rotate the current page by 90°', () => {
+    const design = tb.toggle('Edit form', 'Design mode: select, move, resize and delete fields (Esc to cancel placing)', (on) => setDesign(on), 'edit');
+    design.classList.add('accent');
+    const addGroup = document.createElement('span');
+    addGroup.className = 'tb-group add-group';
+    const place = (label: string, title: string, kind: Exclude<Placing, null>, ic: IconName) => {
+      const b = tb.button(label, title, () => {
+        placing = placing === kind ? null : kind;
+        if (placing && !designMode) design.click();
+        scroller.classList.toggle('placing', !!placing);
+        markPlacing();
+        updateInfo();
+      }, ic);
+      b.dataset['kind'] = kind;
+      addGroup.appendChild(b);
+      return b;
+    };
+    tb.el.querySelector('.toolbar-row')!.appendChild(addGroup);
+    placeButtons = [
+      place('Text field', 'Add a text field — then click on the page', 'text', 'textField'),
+      place('Checkbox', 'Add a checkbox — then click on the page', 'checkbox', 'checkbox'),
+      place('Dropdown', 'Add a dropdown list — then click on the page', 'dropdown', 'dropdown'),
+      place('Text', 'Add fixed text, printed into the page — then click on the page', 'freetext', 'text'),
+    ];
+    tb.spacer();
+    tb.button('', 'Rotate current page 90°', () => {
       const old = state.rotations.get(currentPage) ?? 0;
       emit({ op: 'setRotation', page: currentPage, deg: (old + 90) % 360, old });
-    });
-    tb.button('Delete page', 'Delete the current page (on save)', () => {
+    }, 'rotate');
+    tb.button('', 'Delete current page (restorable until saved)', () => {
       if (state.deletedPages.size + 1 >= recs.length) return;
       emit({ op: 'deletePage', page: currentPage });
-    });
+    }, 'trash');
+  }
+  const info = tb.info();
+  info.classList.add('hint');
+
+  function markPlacing(): void {
+    for (const b of placeButtons) b.setAttribute('aria-pressed', String(b.dataset['kind'] === placing));
   }
 
   function setDesign(on: boolean): void {
@@ -146,9 +186,10 @@ export function renderPdfView(
     if (!on) {
       placing = null;
       scroller.classList.remove('placing');
+      markPlacing();
       select(null);
-      updateInfo();
     }
+    updateInfo();
     for (const r of recs) buildOverlay(r);
   }
 
@@ -387,9 +428,17 @@ export function renderPdfView(
   }
 
   function updateInfo(): void {
-    if (placing) return;
     const total = recs.length;
-    info.textContent = total ? `Page ${currentPage + 1} of ${total}` : '';
+    if (document.activeElement !== pageInput) pageInput.value = total ? String(currentPage + 1) : '–';
+    pageInput.style.width = `${Math.max(2, String(total).length) + 1}ch`;
+    pageTotal.textContent = `/ ${total || '–'}`;
+    prev.disabled = currentPage <= 0;
+    next.disabled = currentPage >= total - 1;
+    info.textContent = placing
+      ? 'Click on the page to place it · Esc to cancel'
+      : designMode
+        ? 'Click a field to select · drag to move · corner to resize · Del to remove'
+        : '';
   }
 
   let raf = 0;
@@ -649,6 +698,7 @@ export function renderPdfView(
     const kind = placing;
     placing = null;
     scroller.classList.remove('placing');
+    markPlacing();
     updateInfo();
     const bounds = rec.overlay.getBoundingClientRect();
     const [px, py] = rec.viewport.convertToPdfPoint(ev.clientX - bounds.left, ev.clientY - bounds.top) as [number, number];
@@ -683,19 +733,37 @@ export function renderPdfView(
     const spec = state.added.get(id);
     const text = state.texts.get(id);
     const orig = recs.flatMap((r) => r.widgets).find((w) => w.id === id);
-    const label = (t: string, input: HTMLElement) => {
+    const label = (t: string, input: HTMLInputElement) => {
       const l = document.createElement('label');
-      l.append(`${t} `, input);
+      l.className = 'field';
+      const cap = document.createElement('span');
+      cap.textContent = t;
+      l.append(cap, input);
       panel.appendChild(l);
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') applyBtn?.click();
+      });
     };
-    const btn = (t: string, fn: () => void) => {
+    let applyBtn: HTMLButtonElement | undefined;
+    const btn = (t: string, fn: () => void, cls = '', ic?: IconName) => {
       const b = document.createElement('button');
       b.type = 'button';
-      b.textContent = t;
+      b.className = `tb-btn ${cls}`;
+      if (ic) b.appendChild(icon(ic));
+      const s = document.createElement('span');
+      s.className = 'tb-label';
+      s.textContent = t;
+      b.appendChild(s);
       b.addEventListener('click', fn);
       panel.appendChild(b);
+      if (t === 'Apply') applyBtn = b;
       return b;
     };
+    const kindName = spec ? spec.kind : orig ? orig.kind : 'text';
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = text ? 'Fixed text' : spec ? `New ${kindName}` : `${kindName} field`;
+    panel.appendChild(badge);
     if (spec) {
       const name = document.createElement('input');
       name.value = spec.name;
@@ -713,7 +781,8 @@ export function renderPdfView(
       });
     } else if (orig) {
       const s = document.createElement('span');
-      s.textContent = `Field "${orig.name}" (${orig.kind})`;
+      s.className = 'field-name';
+      s.textContent = orig.name;
       panel.appendChild(s);
     } else if (text) {
       const size = document.createElement('input');
@@ -730,7 +799,10 @@ export function renderPdfView(
         }
       });
     }
-    btn('Delete', () => deleteSelected());
+    const gap = document.createElement('span');
+    gap.className = 'tb-spacer';
+    panel.appendChild(gap);
+    btn('Delete', () => deleteSelected(), 'danger', 'trash');
   }
 
   function deleteSelected(): void {
@@ -757,7 +829,10 @@ export function renderPdfView(
     } else if (ev.key === 'Escape' && placing) {
       placing = null;
       scroller.classList.remove('placing');
+      markPlacing();
       updateInfo();
+    } else if (ev.key === 'Escape' && designMode && selected) {
+      select(null);
     }
   };
   document.addEventListener('keydown', onKey);

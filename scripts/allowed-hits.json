@@ -13,6 +13,12 @@
       "reason": "Reviewed: (a) 9x `Function(\"return this\")()` as the last fallback for finding the global object in lodash/core-js/exceljs; `self` is found first in a worker, so it is not reached. (b) underscore `_.template` (mammoth dependency, not used by mammoth's HTML conversion). (c) setImmediate polyfill with string argument (never called with a string). The CSP has no 'unsafe-eval', so any dynamic code evaluation throws EvalError."
     },
     {
+      "file": "worker.js",
+      "pattern": "XMLHttpRequest",
+      "count": 1,
+      "reason": "Reviewed: papaparse (MIT) NetworkStreamer for `download: true` (parsing a remote URL). We only call Papa.parse on a string and never pass `download`, so it is never reached; if it were, connect-src 'none' blocks the request."
+    },
+    {
       "file": "webview.js",
       "pattern": "fetch(",
       "count": 4,

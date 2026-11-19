@@ -1,5 +1,6 @@
 // Webview entry (UI thread). Third-party parsing is delegated to the worker.
 import './style.css';
+import './code.css';
 import workerBase64 from 'virtual:worker-bytes';
 import pdfWorkerBase64 from 'virtual:pdf-worker-bytes';
 import { fromByteArray, toByteArray } from '../shared/base64';
@@ -7,6 +8,7 @@ import type { HostMessage, WebviewMessage } from '../shared/messages';
 import type { ApplyResult, DocModel, Edit } from '../shared/model';
 import type { LoadResult, WorkerRequest, WorkerResponse } from './protocol';
 import { createToolbar } from './ui/toolbar';
+import { renderCodeView } from './views/codeView';
 import { renderPdfView } from './views/pdfView';
 import { renderSheetView } from './views/sheetView';
 import { renderSlidesView } from './views/slidesView';
@@ -114,9 +116,12 @@ function render(model: DocModel, readonly: boolean): void {
   content.className = 'content';
   app.append(tb.el, content);
   if (!readonly) {
-    tb.button('↶ Undo', 'Undo (Ctrl+Z)', () => post({ type: 'command', command: 'undo' }));
-    tb.button('↷ Redo', 'Redo (Ctrl+Y)', () => post({ type: 'command', command: 'redo' }));
-    tb.button('Save', 'Save (Ctrl+S)', () => post({ type: 'command', command: 'save' }));
+    tb.button('', 'Undo (Ctrl+Z)', () => post({ type: 'command', command: 'undo' }), 'undo');
+    tb.button('', 'Redo (Ctrl+Y)', () => post({ type: 'command', command: 'redo' }), 'redo');
+    tb.button('', 'Save (Ctrl+S)', () => {
+      view?.flush?.();
+      post({ type: 'command', command: 'save' });
+    }, 'save');
     tb.separator();
   }
   switch (model.type) {
@@ -129,6 +134,9 @@ function render(model: DocModel, readonly: boolean): void {
     case 'slides':
       view = renderSlidesView(content, model, tb);
       break;
+    case 'code':
+      view = renderCodeView(content, model, readonly, onEdit, tb);
+      break;
     case 'pdf': {
       pdfWorker?.terminate();
       pdfWorker = blobWorker(pdfWorkerBase64, { type: 'module' });
@@ -139,6 +147,18 @@ function render(model: DocModel, readonly: boolean): void {
 }
 
 async function userEdit(edit: Edit): Promise<void> {
+  if (edit.kind === 'text') {
+    // Text splices are tied to the exact text: the host must see them before any undo/redo
+    // that a key press may trigger next, so they are sent first (the worker check follows).
+    post({ type: 'edit', edit });
+    try {
+      view?.applyEdit(edit, await rpc<ApplyResult>({ op: 'apply', edit }));
+    } catch (err) {
+      showError(`The edit could not be applied: ${message(err)}`);
+      post({ type: 'error', message: message(err) });
+    }
+    return;
+  }
   try {
     const result = await rpc<ApplyResult>({ op: 'apply', edit });
     view?.applyEdit(edit, result);
@@ -193,6 +213,7 @@ async function onSave(requestId: number): Promise<void> {
     return;
   }
   try {
+    view?.flush?.(); // its edit reaches the worker before the save request
     const bytes = await rpc<Uint8Array>({ op: 'save' });
     post({ type: 'saveResult', requestId, bytes: fromByteArray(bytes) });
   } catch (err) {

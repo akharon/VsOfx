@@ -92,17 +92,17 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
 
   // ---- toolbar: find, freeze first row, filter ----
   const finder = createFindBar(tb.extra, sheetFinder());
-  tb.button('Find', 'Find in workbook (Ctrl+F)', () => finder.toggle());
+  tb.button('', 'Find in workbook (Ctrl+F)', () => finder.toggle(), 'search');
   tb.separator();
   const freezeBtn = tb.toggle('Freeze row', 'Freeze the first row', (on) => {
     freezeOn = on;
     applyViewOptions();
-  });
+  }, 'freeze');
   const filterBtn = tb.toggle('Filter', 'Filter rows by text (the first row is the header)', (on) => {
     filterOn = on;
     filters = [];
     renderSheet();
-  });
+  }, 'filter');
   function applyViewOptions() {
     const big = virtual();
     for (const b of [freezeBtn, filterBtn]) {

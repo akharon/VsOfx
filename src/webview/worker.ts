@@ -2,6 +2,7 @@
 import { assertOfficePackage, createAdapter } from './adapters';
 import { assertPdf } from './adapters/pdfAdapter';
 import type { FormatAdapter } from './adapters/Adapter';
+import { isTextFormat } from '../shared/model';
 import type { LoadResult, WorkerRequest, WorkerResponse } from './protocol';
 
 let adapter: FormatAdapter | undefined;
@@ -20,7 +21,7 @@ async function handle(req: WorkerRequest): Promise<void> {
     switch (req.op) {
       case 'load': {
         if (req.format === 'pdf') assertPdf(req.bytes);
-        else assertOfficePackage(req.bytes);
+        else if (!isTextFormat(req.format)) assertOfficePackage(req.bytes);
         adapter = createAdapter(req.format);
         const model = await adapter.load(req.bytes, req.edits);
         const result: LoadResult = { model, readonly: adapter.readonly };

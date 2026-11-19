@@ -17,9 +17,20 @@ export function activate(context: vscode.ExtensionContext) {
       webviewOptions: { retainContextWhenHidden: retain },
       supportsMultipleEditorsPerDocument: true,
     }),
+    vscode.window.registerCustomEditorProvider(OfficeEditorProvider.dataViewType, provider, {
+      webviewOptions: { retainContextWhenHidden: retain },
+      supportsMultipleEditorsPerDocument: true,
+    }),
+    vscode.commands.registerCommand('vsofx.openInVisualEditor', (uri?: vscode.Uri) => {
+      const target = uri ?? vscode.window.activeTextEditor?.document.uri;
+      if (target) void vscode.commands.executeCommand('vscode.openWith', target, OfficeEditorProvider.dataViewType);
+    }),
     vscode.commands.registerCommand('vsofx.reopenWithTextEditor', () => {
       const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-      if (input instanceof vscode.TabInputCustom && input.viewType === OfficeEditorProvider.viewType) {
+      if (
+        input instanceof vscode.TabInputCustom &&
+        (input.viewType === OfficeEditorProvider.viewType || input.viewType === OfficeEditorProvider.dataViewType)
+      ) {
         provider.reopenAsText(input.uri);
       } else {
         void vscode.window.showInformationMessage('VsOfx: the active tab is not an Office document.');

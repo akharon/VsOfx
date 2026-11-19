@@ -12,7 +12,9 @@ beforeEach(() => {
 });
 
 const btn = (tb: ReturnType<typeof createToolbar>, label: string) =>
-  Array.from(tb.el.querySelectorAll('button')).find((b) => b.textContent === label)!;
+  Array.from(tb.el.querySelectorAll('button')).find(
+    (b) => b.textContent === label || b.getAttribute('aria-label') === label || b.title.startsWith(label),
+  )!;
 
 const sheet = (): SheetModel => ({
   type: 'sheet',
@@ -110,9 +112,9 @@ describe('document toolbar', () => {
   it('toggles formatting marks and zoom', () => {
     const tb = createToolbar();
     renderTextView(root, doc(), false, () => {}, tb);
-    btn(tb, '¶').click();
+    btn(tb, 'Show formatting marks').click();
     expect(root.querySelector('.page')!.classList.contains('marks')).toBe(true);
-    btn(tb, 'A+').click();
+    btn(tb, 'Zoom in').click();
     expect(root.querySelector<HTMLElement>('.doc-layout')!.style.getPropertyValue('--zoom')).toBe('1.1');
     expect(btn(tb, '110%')).toBeTruthy();
     btn(tb, '110%').click();
