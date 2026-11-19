@@ -475,6 +475,7 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
     applyEdit(edit: Edit, result: ApplyResult) {
       if (edit.kind !== 'cell') return;
       setCell(edit.row, edit.col, result.cell ?? null, edit.sheet);
+      for (const o of result.others ?? []) setCell(o.row, o.col, o.cell, o.sheet);
     },
     dispose() {
       finder.close();

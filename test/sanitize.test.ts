@@ -19,9 +19,10 @@ describe('sanitizer', () => {
     expect(out).toContain('<p>t</p>');
   });
 
-  it('rejects javascript: and external links but keeps the text', () => {
+  it('rejects javascript: links; external links become inert data-href (never followed)', () => {
     expect(sanitizeHtml('<p><a href="javascript:alert(1)">click</a></p>')).toBe('<p>click</p>');
-    expect(sanitizeHtml('<p><a href="https://evil.example/x">site</a></p>')).toBe('<p>site</p>');
+    expect(sanitizeHtml('<p><a href="https://site.example/x">site</a></p>')).toBe('<p><a data-href="https://site.example/x">site</a></p>');
+    expect(sanitizeHtml('<p><a href="file:///etc/passwd">f</a></p>')).toBe('<p>f</p>');
     expect(sanitizeHtml('<p><a href="#bookmark">jump</a></p>')).toBe('<p><a href="#bookmark">jump</a></p>');
   });
 

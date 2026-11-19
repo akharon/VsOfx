@@ -239,3 +239,32 @@ export function makeOds(): Uint8Array {
       '</office:spreadsheet></office:body>',
   );
 }
+
+const PRES_NS = 'xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"';
+
+export function makeOdp(kind: 'presentation' | 'drawing' = 'presentation'): Uint8Array {
+  const body = kind === 'presentation' ? 'presentation' : 'drawing';
+  return odf(
+    kind === 'presentation' ? 'application/vnd.oasis.opendocument.presentation' : 'application/vnd.oasis.opendocument.graphics',
+    `<office:body ${PRES_NS}><office:${body}>` +
+      '<draw:page draw:name="page1">' +
+      '<draw:frame presentation:class="title"><draw:text-box><text:p>Hello ODP</text:p></draw:text-box></draw:frame>' +
+      '<draw:frame presentation:class="outline"><draw:text-box><text:list><text:list-item><text:p>Point one</text:p></text:list-item></text:list></draw:text-box></draw:frame>' +
+      '<draw:custom-shape><text:p>Shape text</text:p></draw:custom-shape>' +
+      '<presentation:notes><draw:frame><draw:text-box><text:p>Speaker note</text:p></draw:text-box></draw:frame></presentation:notes>' +
+      '</draw:page>' +
+      `</office:${body}></office:body>`,
+  );
+}
+
+export function makeOdsFormulas(): Uint8Array {
+  return odf(
+    'application/vnd.oasis.opendocument.spreadsheet',
+    '<office:body><office:spreadsheet><table:table table:name="S">' +
+      '<table:table-row>' +
+      '<table:table-cell office:value-type="float" office:value="2"><text:p>2</text:p></table:table-cell>' +
+      '<table:table-cell office:value-type="float" office:value="3"><text:p>3</text:p></table:table-cell>' +
+      '<table:table-cell table:formula="of:=SUM([.A1:.B1])" office:value-type="float" office:value="5"><text:p>5</text:p></table:table-cell>' +
+      '</table:table-row></table:table></office:spreadsheet></office:body>',
+  );
+}

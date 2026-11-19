@@ -1,5 +1,7 @@
 import * as MammothNS from 'mammoth';
 import type { ApplyResult, Edit, TextModel } from '../../shared/model';
+import { CELL_BASE, cellIndex, fmtEquals, runsToHtml, type ParaFmt, type TableSpec } from '../../shared/richtext';
+import { buildTable, DocxParts, insertTablesAfter, writeParagraph } from './docxWrite';
 import { sanitizeChildren, parseHtmlFragment } from '../sanitize';
 import type { FormatAdapter } from './Adapter';
 import { descendantsNS, hasAncestor, normText, parseXml, serializeXml, xmlSafe } from './xml';
@@ -53,13 +55,22 @@ function paragraphText(p: Element): string {
   return out;
 }
 
+interface ParaState {
+  text: string;
+  fmt?: ParaFmt;
+}
+
 export class DocxAdapter implements FormatAdapter {
   readonly readonly = false;
   private entries!: ZipEntries;
   private paragraphs: string[] = []; // original text per body paragraph
   private html = '';
-  /** paragraph index -> edited text (only paragraphs that differ from the original). */
-  private readonly edited = new Map<number, string>();
+  /** paragraph index -> edited content (only paragraphs that differ from the original). */
+  private readonly edited = new Map<number, ParaState>();
+  /** State before the first edit of a paragraph, to detect "back at the original". */
+  private readonly originals = new Map<number, ParaState>();
+  /** Tables inserted by the user, by id. Their cells are paragraphs with virtual indices. */
+  private readonly tables = new Map<number, TableSpec>();
   /** Fraction of non-empty paragraphs that could be matched to a rendered block (for tests/diagnostics). */
   mappedRatio = 1;
 
@@ -77,28 +88,68 @@ export class DocxAdapter implements FormatAdapter {
     this.html = result.value;
 
     for (const e of edits) this.applyEdit(e);
-    return { type: 'text', html: this.render() };
+    const tables = [...this.tables.values()].map((table) => {
+      const cells: string[] = [];
+      for (let r = 0; r < table.rows; r++) {
+        for (let c = 0; c < table.cols; c++) {
+          const s = this.edited.get(cellIndex(table, r, c));
+          cells.push(s?.fmt ? runsToHtml(s.fmt.runs) : '');
+        }
+      }
+      return { table, cells };
+    });
+    return { type: 'text', html: this.render(), rich: true, tables };
   }
 
   applyEdit(edit: Edit): ApplyResult {
+    if (edit.kind === 'table') {
+      if (edit.op === 'insert') this.tables.set(edit.table.id, edit.table);
+      else this.tables.delete(edit.table.id);
+      return {};
+    }
     if (edit.kind !== 'paragraph') throw new Error('Not a paragraph edit');
+    const isCell = edit.index >= CELL_BASE;
     const original = this.paragraphs[edit.index];
-    if (original === undefined) throw new Error(`Paragraph ${edit.index} does not exist`);
-    // Back at the original text: forget the edit so the original runs are kept on save.
-    if (normText(edit.text) === normText(original)) this.edited.delete(edit.index);
-    else this.edited.set(edit.index, edit.text);
+    if (original === undefined && !isCell) throw new Error(`Paragraph ${edit.index} does not exist`);
+    if (!this.originals.has(edit.index)) {
+      this.originals.set(edit.index, edit.oldFmt ? { text: edit.old, fmt: edit.oldFmt } : { text: original ?? '' });
+    }
+    const first = this.originals.get(edit.index)!;
+    // Back at the original: forget the edit so the original runs are kept on save.
+    const same = edit.fmt || first.fmt ? fmtEquals(edit.fmt, first.fmt) : normText(edit.text) === normText(first.text);
+    if (same && !isCell) this.edited.delete(edit.index);
+    else this.edited.set(edit.index, edit.fmt ? { text: edit.text, fmt: edit.fmt } : { text: edit.text });
     return {};
   }
 
   async save(): Promise<Uint8Array> {
-    if (this.edited.size === 0) return writeZip(this.entries, {});
+    if (this.edited.size === 0 && this.tables.size === 0) return writeZip(this.entries, {});
     const doc = parseXml(text(this.entries, 'word/document.xml'));
     const paras = bodyParagraphs(doc);
-    for (const [index, t] of this.edited) {
+    const parts = new DocxParts(this.entries, doc);
+    for (const [index, s] of this.edited) {
       const p = paras[index];
-      if (p) patchParagraph(doc, p, t);
+      if (!p) continue; // table cells are written below
+      if (s.fmt) writeParagraph(parts, p, s.fmt);
+      else patchParagraph(doc, p, s.text);
     }
-    return writeZip(this.entries, { 'word/document.xml': serializeXml(doc) });
+    const byAnchor = new Map<number, TableSpec[]>();
+    for (const t of [...this.tables.values()].sort((a, b) => a.id - b.id)) {
+      byAnchor.set(t.after, [...(byAnchor.get(t.after) ?? []), t]);
+    }
+    for (const [after, specs] of byAnchor) {
+      const p = paras[after];
+      if (!p) continue;
+      const pfx = p.prefix ? `${p.prefix}:` : '';
+      const tables = specs.map((spec) =>
+        buildTable(parts, pfx, spec, (r, c) => {
+          const s = this.edited.get(cellIndex(spec, r, c));
+          return s?.fmt ?? (s ? { runs: [{ t: s.text }] } : undefined);
+        }),
+      );
+      insertTablesAfter(p, tables);
+    }
+    return writeZip(this.entries, { ...parts.replacements(), 'word/document.xml': serializeXml(doc) });
   }
 
   /** Renders the sanitized HTML, tagging blocks that map to paragraphs with data-p. */
@@ -119,18 +170,26 @@ export class DocxAdapter implements FormatAdapter {
         const limit = Math.min(this.paragraphs.length, cursor + LOOKAHEAD);
         for (let j = cursor; j < limit; j++) {
           const original = normText(this.paragraphs[j] ?? '');
-          if (original === t || (edited.has(j) && normText(edited.get(j) ?? '') === t)) {
+          if (original === t || (edited.has(j) && normText(edited.get(j)?.text ?? '') === t)) {
             cursor = j + 1;
             mapped++;
             assigned.set(el, j);
-            return { 'data-p': String(j) };
+            const block = edited.get(j)?.fmt?.block;
+            const attrs: Record<string, string> = { 'data-p': String(j) };
+            if (block) attrs['data-block'] = block;
+            return attrs;
           }
         }
         return undefined;
       },
+      htmlOverride: (el: Element) => {
+        const j = assigned.get(el);
+        const fmt = j !== undefined ? edited.get(j)?.fmt : undefined;
+        return fmt ? runsToHtml(fmt.runs) : undefined;
+      },
       textOverride: (el: Element) => {
         const j = assigned.get(el);
-        return j !== undefined && edited.has(j) ? edited.get(j) : undefined;
+        return j !== undefined && edited.has(j) ? edited.get(j)!.text : undefined;
       },
     };
     const html = sanitizeChildren(root, hooks);

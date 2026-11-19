@@ -186,11 +186,8 @@ describe('VsOfx in VS Code', function () {
     await textEditSave('t.csv', 'a;b\r\n1;2\r\n', VIEW_TYPE, { kind: 'cell', sheet: 0, row: 1, col: 1, value: 'x;y', old: '2' }, 'a;b\r\n1;"x;y"\r\n');
   });
 
-  it('json / yaml / xml / markdown: visual editor, text edit + save', async () => {
+  it('markdown: preview editor, text edit + save', async () => {
     const DATA = 'vsofx.dataEditor';
-    await textEditSave('t.json', '{\r\n  "a": 1 // c\r\n}\r\n', DATA, { kind: 'text', at: 9, del: '1', ins: '2' }, '{\r\n  "a": 2 // c\r\n}\r\n');
-    await textEditSave('t.yaml', 'a: 1\n', DATA, { kind: 'text', at: 3, del: '1', ins: 'two' }, 'a: two\n');
-    await textEditSave('t.xml', '<a>1</a>', DATA, { kind: 'text', at: 3, del: '1', ins: '&amp;' }, '<a>&amp;</a>');
     await textEditSave('t.md', '# Hi\n', DATA, { kind: 'text', at: 4, del: '', ins: ' there' }, '# Hi there\n');
   });
 

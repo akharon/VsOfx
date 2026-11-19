@@ -1,32 +1,37 @@
 {
+  // All tasks run through scripts/npm.ps1 (Node.js from PATH, or a portable one in .tools/).
   "version": "2.0.0",
   "tasks": [
     {
       "label": "npm: build (dev)",
-      "type": "shell",
-      "command": "node esbuild.mjs --dev",
+      "type": "process",
+      "command": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/npm.ps1", "-Node", "esbuild.mjs", "--dev"],
       "group": "build",
       "problemMatcher": "$tsc"
     },
     {
       "label": "npm: watch",
-      "type": "shell",
-      "command": "npm run watch",
+      "type": "process",
+      "command": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/npm.ps1", "run", "watch"],
       "isBackground": true,
       "group": "build",
       "problemMatcher": []
     },
     {
       "label": "Package VSIX",
-      "type": "shell",
-      "command": "npm run package",
+      "type": "process",
+      "command": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/npm.ps1", "run", "package:clean"],
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
     },
     {
       "label": "Run all checks",
-      "type": "shell",
-      "command": "npm run check",
+      "type": "process",
+      "command": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/npm.ps1", "run", "check"],
       "group": "test",
       "problemMatcher": []
     }

@@ -1,4 +1,6 @@
 {
+  // Every command goes through scripts/npm.ps1: it uses Node.js from PATH, or a portable
+  // Node.js in .tools/ that it downloads once (checksum-verified) when none is installed.
   "version": "0.2.0",
   "configurations": [
     {
@@ -13,14 +15,14 @@
       "name": "Build VSIX (npm run package)",
       "type": "node-terminal",
       "request": "launch",
-      "command": "npm run package:clean",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/npm.ps1 run package:clean",
       "cwd": "${workspaceFolder}"
     },
     {
       "name": "Integration Tests",
       "type": "node-terminal",
       "request": "launch",
-      "command": "npm run test:integration",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/npm.ps1 run test:integration",
       "cwd": "${workspaceFolder}"
     }
   ]

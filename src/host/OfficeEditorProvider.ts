@@ -29,7 +29,7 @@ interface PendingSave {
  */
 export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeDocument> {
   static readonly viewType = 'vsofx.officeEditor';
-  /** Same editor for JSON, YAML, XML and Markdown; registered as an *option* so VS Code's text editor stays the default. */
+  /** Same editor for Markdown; registered as an *option* so VS Code's text editor stays the default. */
   static readonly dataViewType = 'vsofx.dataEditor';
 
   private readonly _onDidChange = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<OfficeDocument>>();
@@ -93,7 +93,7 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
     this.panels.set(key, set);
     const format = formatFromPath(document.uri.path);
     // The first editor of a document is editable, further ones are read-only mirrors.
-    const readonly = format === 'pptx' || set.size > 0;
+    const readonly = format === 'pptx' || format === 'odp' || format === 'odg' || set.size > 0;
     set.add(panel);
     this.docs.set(key, document);
     this.info.set(panel, { document, format, readonly });
@@ -335,6 +335,8 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
 function editLabel(edit: Edit): string {
   if (edit.kind === 'pdf') return pdfEditLabel(edit.op);
   if (edit.kind === 'text') return edit.del === '' ? 'Insert text' : edit.ins === '' ? 'Delete text' : 'Edit text';
+  if (edit.kind === 'table') return edit.op === 'insert' ? 'Insert table' : 'Remove table';
+  if (edit.kind === 'paragraph' && edit.fmt && edit.oldFmt && edit.text === edit.old) return 'Format paragraph';
   return edit.kind === 'cell' ? 'Edit cell' : 'Edit paragraph';
 }
 

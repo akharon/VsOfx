@@ -108,3 +108,19 @@ describe('xlsx adapter', () => {
     expect(s.rows[9_999]![1]!.text).toBe('row 10000');
   }, 120_000);
 });
+
+describe('xlsx from other generators', () => {
+  it('opens a workbook whose core.xml uses a default namespace instead of cp: (e.g. Microsoft 365 Copilot)', async () => {
+    const { readZip, writeZip } = await import('../src/webview/adapters/zip.ts');
+    const parts = readZip(await makeXlsx('simple'));
+    const core =
+      '﻿<?xml version="1.0" encoding="utf-8"?><coreProperties xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" ' +
+      'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://schemas.openxmlformats.org/package/2006/metadata/core-properties">' +
+      '<dc:creator>Generator</dc:creator><lastModifiedBy>Generator</lastModifiedBy></coreProperties>';
+    const bytes = writeZip(parts, { 'docProps/core.xml': core });
+    const a = new XlsxAdapter();
+    const model = (await a.load(bytes, [])) as SheetModel;
+    expect(model.sheets.length).toBeGreaterThan(0);
+    expect((await a.save()).length).toBeGreaterThan(0);
+  });
+});

@@ -19,6 +19,7 @@ junit*.xml
 .pairs/
 .eslintcache
 .cache/
+.tools/
 
 # Logs
 *.log

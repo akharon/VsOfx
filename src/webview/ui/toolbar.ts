@@ -44,7 +44,6 @@ const ICONS = {
   arrowUp: ['M8 13V3', 'M4 7l4-4 4 4'],
   arrowDown: ['M8 3v10', 'M4 9l4 4 4-4'],
   close: ['M4 4l8 8', 'M12 4l-8 8'],
-  tree: ['M3 2.5v8.5h4', 'M3 6h4', 'M8 4.5h5.5v3H8z', 'M8 9.5h5.5v3H8z'],
   preview: ['M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z', 'M8 6a2 2 0 1 0 0 4a2 2 0 1 0 0-4z'],
   split: ['M2 2.5h12v11H2z', 'M8 2.5v11'],
   code: ['M5.5 4.5 2 8l3.5 3.5', 'M10.5 4.5 14 8l-3.5 3.5'],
@@ -56,10 +55,6 @@ const ICONS = {
   quote: ['M3 4v8', 'M6 5h7', 'M6 8h7', 'M6 11h5'],
   link: ['M6.5 9.5l3-3', 'M7.5 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1', 'M8.5 11.5l-1 1A2.5 2.5 0 0 1 4 9l1-1'],
   table: ['M2 3h12v10H2z', 'M2 6.5h12', 'M2 10h12', 'M6.5 3v10'],
-  format: ['M2.5 3.5h11', 'M5 6.5h8.5', 'M5 9.5h8.5', 'M2.5 12.5h11'],
-  expand: ['M4 6l4 4 4-4', 'M2.5 2.5h11'],
-  collapse: ['M4 10l4-4 4 4', 'M2.5 13.5h11'],
-  warning: ['M8 2l6.5 11.5h-13z', 'M8 6.5v3.5', 'M8 12v.01'],
 } satisfies Record<string, string[]>;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';

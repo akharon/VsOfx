@@ -3,6 +3,7 @@ import type { FormatAdapter } from './Adapter';
 import { CodeAdapter } from './codeAdapter';
 import { CsvAdapter } from './csvAdapter';
 import { DocxAdapter } from './docxAdapter';
+import { OdpAdapter } from './odpAdapter';
 import { OdsAdapter } from './odsAdapter';
 import { OdtAdapter } from './odtAdapter';
 import { PdfAdapter } from './pdfAdapter';
@@ -23,13 +24,14 @@ export function createAdapter(format: Format): FormatAdapter {
       return new OdtAdapter();
     case 'ods':
       return new OdsAdapter();
+    case 'odp':
+      return new OdpAdapter('presentation');
+    case 'odg':
+      return new OdpAdapter('drawing');
     case 'pdf':
       return new PdfAdapter();
     case 'csv':
       return new CsvAdapter();
-    case 'json':
-    case 'yaml':
-    case 'xml':
     case 'markdown':
       return new CodeAdapter(format);
   }

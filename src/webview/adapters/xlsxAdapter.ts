@@ -1,8 +1,37 @@
 import * as ExcelNS from 'exceljs';
 import type { ApplyResult, CellEdit, CellStyle, CellView, Edit, MergeRange, SheetData, SheetModel } from '../../shared/model';
 import { MAX_COLS, MAX_ROWS } from '../../shared/model';
+import { Calc, FormulaError, UNSUPPORTED, type Book, type Scalar } from '../../shared/formula';
 import type { FormatAdapter } from './Adapter';
 import { formatDate, formatNumber } from './numFmt';
+import { readZip, writeZip } from './zip';
+
+const CP_NS = 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties';
+const CP_ELEMENTS = ['coreProperties', 'category', 'contentStatus', 'contentType', 'keywords', 'lastModifiedBy', 'lastPrinted', 'revision', 'version'];
+
+/**
+ * exceljs only understands docProps/core.xml with the usual `cp:` prefix. Some generators
+ * (e.g. Microsoft 365 Copilot) declare that namespace as the default namespace instead
+ * (`<coreProperties xmlns="..."><lastModifiedBy>`), which is valid XML but makes exceljs throw
+ * "Unexpected xml node in parseOpen". Such a part is rewritten to the prefixed form in memory
+ * before loading; every other file is passed through unchanged.
+ */
+export function normalizeForExcelJs(bytes: Uint8Array): Uint8Array {
+  let entries;
+  try {
+    entries = readZip(bytes);
+  } catch {
+    return bytes; // let exceljs report the problem
+  }
+  const name = Object.keys(entries).find((n) => n.toLowerCase() === 'docprops/core.xml');
+  const part = name ? entries[name] : undefined;
+  if (!name || !part) return bytes;
+  let xml = new TextDecoder().decode(part).replace(/^﻿/, '');
+  if (/<cp:coreProperties[\s>]/.test(xml) || !xml.includes(`xmlns="${CP_NS}"`)) return bytes;
+  xml = xml.replace(`xmlns="${CP_NS}"`, `xmlns:cp="${CP_NS}"`);
+  xml = xml.replace(new RegExp(`<(/?)(${CP_ELEMENTS.join('|')})(?=[\\s/>])`, 'g'), '<$1cp:$2');
+  return writeZip(entries, { [name]: xml });
+}
 
 // The package is CommonJS: depending on the bundler/loader the API is on `default` or on the namespace.
 const Excel: typeof ExcelNS = (ExcelNS as unknown as { default?: typeof ExcelNS }).default ?? ExcelNS;
@@ -24,7 +53,7 @@ export class XlsxAdapter implements FormatAdapter {
   async load(bytes: Uint8Array, edits: Edit[]): Promise<SheetModel> {
     this.workbook = new Excel.Workbook();
     // exceljs accepts Buffer/ArrayBuffer; a plain copy keeps it independent of the caller's memory.
-    await this.workbook.xlsx.load(bytes.slice().buffer as ArrayBuffer);
+    await this.workbook.xlsx.load(normalizeForExcelJs(bytes).slice().buffer as ArrayBuffer);
     for (const e of edits) this.applyEdit(e);
     return { type: 'sheet', sheets: this.workbook.worksheets.map((ws) => this.sheetData(ws)) };
   }
@@ -42,7 +71,44 @@ export class XlsxAdapter implements FormatAdapter {
     }
     // Returning to the original text restores the original typed value (dates, formulas, ...).
     cell.value = edit.value === orig.input ? orig.raw : parseInput(edit, orig.raw);
-    return { cell: this.cellView(cell) };
+    // Excel recalculates everything when the file is opened again
+    (this.workbook as unknown as { calcProperties: { fullCalcOnLoad?: boolean } }).calcProperties.fullCalcOnLoad = true;
+    const others = this.recalc().filter((o) => !(o.sheet === edit.sheet && o.row === edit.row && o.col === edit.col));
+    const res: ApplyResult = { cell: this.cellView(cell) };
+    if (others.length) res.others = others;
+    return res;
+  }
+
+  /** Recomputes all formulas; returns the cells whose result changed. Unsupported formulas keep their cached result. */
+  private recalc(): NonNullable<ApplyResult['others']> {
+    const wss = this.workbook.worksheets;
+    const find = (s: number, r: number, c: number) => wss[s]?.findRow(r + 1)?.findCell(c + 1);
+    const book: Book = {
+      sheetIndex: (name) => wss.findIndex((w) => w.name.toLowerCase() === name.toLowerCase()),
+      value: (s, r, c) => scalarOf(find(s, r, c)?.value),
+      formula: (s, r, c) => {
+        const f = find(s, r, c)?.formula;
+        return typeof f === 'string' && f ? f : undefined;
+      },
+      size: (s) => ({ rows: wss[s]?.rowCount ?? 0, cols: wss[s]?.columnCount ?? 0 }),
+    };
+    const calc = new Calc(book);
+    const changed: NonNullable<ApplyResult['others']> = [];
+    wss.forEach((ws, si) => {
+      ws.eachRow({ includeEmpty: false }, (row, rn) => {
+        row.eachCell({ includeEmpty: false }, (cell, cn) => {
+          if (typeof cell.formula !== 'string' || !cell.formula) return;
+          const v = calc.cell(si, rn - 1, cn - 1);
+          if (v === UNSUPPORTED) return;
+          const result = resultOf(v);
+          const cur = cell.value as unknown as { result?: unknown };
+          if (sameResult(cur.result, result)) return;
+          cell.value = { ...(cell.value as object), result } as unknown as ExcelNS.CellValue;
+          if (rn <= MAX_ROWS && cn <= MAX_COLS) changed.push({ sheet: si, row: rn - 1, col: cn - 1, cell: this.cellView(cell) });
+        });
+      });
+    });
+    return changed;
   }
 
   async save(): Promise<Uint8Array> {
@@ -174,4 +240,32 @@ function parseInput(edit: CellEdit, raw: ExcelNS.CellValue): ExcelNS.CellValue {
     if (Number.isFinite(n)) return n;
   }
   return v;
+}
+
+const EPOCH = Date.UTC(1899, 11, 30);
+
+/** exceljs cell value -> formula engine value. */
+function scalarOf(v: ExcelNS.CellValue | undefined): Scalar {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') return v;
+  if (v instanceof Date) return (v.getTime() - EPOCH) / 86400000;
+  const o = v as unknown as Record<string, unknown>;
+  if ('result' in o) return scalarOf(o['result'] as ExcelNS.CellValue);
+  if (Array.isArray(o['richText'])) return (o['richText'] as { text: string }[]).map((t) => t.text).join('');
+  if (typeof o['text'] === 'string') return o['text'];
+  if (typeof o['error'] === 'string') return new FormulaError(o['error']);
+  return null;
+}
+
+/** Engine value -> exceljs formula result. */
+function resultOf(v: Scalar): unknown {
+  if (v === null) return 0;
+  if (v instanceof FormulaError) return { error: v.code };
+  return v;
+}
+
+function sameResult(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a && b && typeof a === 'object' && typeof b === 'object') return (a as { error?: string }).error === (b as { error?: string }).error;
+  return false;
 }

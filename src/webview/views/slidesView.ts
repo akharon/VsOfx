@@ -8,7 +8,10 @@ export function renderSlidesView(container: HTMLElement, model: SlidesModel, tb:
   container.replaceChildren();
   const banner = document.createElement('div');
   banner.className = 'banner';
-  banner.textContent = 'Presentations are shown read-only (text and first picture of each slide).';
+  banner.textContent =
+    model.kind === 'drawing'
+      ? 'Drawings are shown read-only (text and first picture of each page).'
+      : 'Presentations are shown read-only (text and first picture of each slide).';
   const list = document.createElement('div');
   list.className = 'slides';
   container.append(banner, list);

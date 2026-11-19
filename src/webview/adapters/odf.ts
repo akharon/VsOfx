@@ -14,6 +14,8 @@ export const NS = {
 
 export const MIME_ODT = 'application/vnd.oasis.opendocument.text';
 export const MIME_ODS = 'application/vnd.oasis.opendocument.spreadsheet';
+export const MIME_ODP = 'application/vnd.oasis.opendocument.presentation';
+export const MIME_ODG = 'application/vnd.oasis.opendocument.graphics';
 
 export function isEl(n: Node | null, ns: string, local: string): boolean {
   return !!n && n.nodeType === 1 && (n as Element).namespaceURI === ns && (n as Element).localName === local;

@@ -1,0 +1,1 @@
+<table border="1"><tr><th>ID</th><th>Name</th><th>Department</th><th>Salary</th></tr><tr><td>1</td><td>Alice</td><td>Engineering</td><td>75000</td></tr><tr><td>2</td><td>Bob</td><td>QA</td><td>68000</td></tr><tr><td>3</td><td>Charlie</td><td>Product</td><td>82000</td></tr></table>
