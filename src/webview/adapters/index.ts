@@ -1,4 +1,4 @@
-import type { Format } from '../../shared/model';
+import type { ApplyResult, Edit, Format } from '../../shared/model';
 import type { FormatAdapter } from './Adapter';
 import { CodeAdapter } from './codeAdapter';
 import { CsvAdapter } from './csvAdapter';
@@ -13,6 +13,17 @@ import { isZip } from './zip';
 
 /** Creates the adapter for a format. Libraries are only touched when `load` runs. */
 export function createAdapter(format: Format): FormatAdapter {
+  return withBatches(adapterFor(format));
+}
+
+/** Batch edits are applied part by part (also while edits are replayed on load). */
+function withBatches(a: FormatAdapter): FormatAdapter {
+  const apply = a.applyEdit.bind(a);
+  a.applyEdit = (edit: Edit): ApplyResult => (edit.kind === 'batch' ? { batch: edit.edits.map((e) => a.applyEdit(e)) } : apply(edit));
+  return a;
+}
+
+function adapterFor(format: Format): FormatAdapter {
   switch (format) {
     case 'xlsx':
       return new XlsxAdapter();

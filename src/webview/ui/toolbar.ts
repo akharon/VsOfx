@@ -40,6 +40,7 @@ const ICONS = {
   outline: ['M2.5 3.5h11', 'M5 8h8.5', 'M7.5 12.5h6'],
   pilcrow: ['M9.5 13V3', 'M12 13V3', 'M13 3H7.25a2.75 2.75 0 0 0 0 5.5H9.5'],
   freeze: ['M2.5 2.5h11v11h-11z', 'M2.5 6h11'],
+  wrap: ['M2 3.5h12', 'M2 8h9.5a2 2 0 0 1 0 4H8', 'M9.5 10.5 8 12l1.5 1.5', 'M2 12.5h3'],
   filter: ['M2 3h12L9.3 8.6V13l-2.6-1.3V8.6z'],
   arrowUp: ['M8 13V3', 'M4 7l4-4 4 4'],
   arrowDown: ['M8 3v10', 'M4 9l4 4 4-4'],
@@ -55,6 +56,8 @@ const ICONS = {
   quote: ['M3 4v8', 'M6 5h7', 'M6 8h7', 'M6 11h5'],
   link: ['M6.5 9.5l3-3', 'M7.5 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1', 'M8.5 11.5l-1 1A2.5 2.5 0 0 1 4 9l1-1'],
   table: ['M2 3h12v10H2z', 'M2 6.5h12', 'M2 10h12', 'M6.5 3v10'],
+  alignH: ['M2 3.5h12', 'M4 6.5h8', 'M2 9.5h12', 'M4 12.5h8'],
+  alignV: ['M2 2.5h12', 'M2 13.5h12', 'M8 4.5v7', 'M6 6.5l2-2 2 2', 'M6 9.5l2 2 2-2'],
 } satisfies Record<string, string[]>;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';

@@ -90,8 +90,7 @@ function showLoading(): void {
 }
 
 function showError(message: string): void {
-  view?.dispose();
-  view = undefined;
+  closeView();
   app.replaceChildren();
   const box = document.createElement('div');
   box.className = 'error';
@@ -108,7 +107,7 @@ function showError(message: string): void {
 }
 
 function render(model: DocModel, readonly: boolean): void {
-  view?.dispose();
+  closeView();
   refreshSource = undefined;
   app.replaceChildren();
   const onEdit = (edit: Edit) => void userEdit(edit);
@@ -117,8 +116,15 @@ function render(model: DocModel, readonly: boolean): void {
   content.className = 'content';
   app.append(tb.el, content);
   if (!readonly) {
-    tb.button('', 'Undo (Ctrl+Z)', () => post({ type: 'command', command: 'undo' }), 'undo');
-    tb.button('', 'Redo (Ctrl+Y)', () => post({ type: 'command', command: 'redo' }), 'redo');
+    // pending typing becomes an edit first, so undo/redo act on what the user sees
+    tb.button('', 'Undo (Ctrl+Z)', () => {
+      view?.flush?.();
+      post({ type: 'command', command: 'undo' });
+    }, 'undo');
+    tb.button('', 'Redo (Ctrl+Y)', () => {
+      view?.flush?.();
+      post({ type: 'command', command: 'redo' });
+    }, 'redo');
     tb.button('', 'Save (Ctrl+S)', () => {
       view?.flush?.();
       post({ type: 'command', command: 'save' });
@@ -207,13 +213,30 @@ function addSourceToggle(tb: ReturnType<typeof createToolbar>, content: HTMLElem
   }, 'code');
 }
 
+/**
+ * Closes the current view without keeping its unsent input: the document is being reloaded
+ * (revert, change on disk) or replaced, and an edit from the old view would land on the new content.
+ */
+let closing = false;
+function closeView(): void {
+  const old = view;
+  view = undefined;
+  closing = true;
+  try {
+    old?.dispose();
+  } finally {
+    closing = false;
+  }
+}
+
 async function userEdit(edit: Edit): Promise<void> {
+  if (closing || !view) return;
   if (edit.kind === 'text') {
     // Text splices are tied to the exact text: the host must see them before any undo/redo
     // that a key press may trigger next, so they are sent first (the worker check follows).
     post({ type: 'edit', edit });
     try {
-      view?.applyEdit(edit, await rpc<ApplyResult>({ op: 'apply', edit }));
+      showEdit(edit, await rpc<ApplyResult>({ op: 'apply', edit }));
     } catch (err) {
       showError(`The edit could not be applied: ${message(err)}`);
       post({ type: 'error', message: message(err) });
@@ -222,13 +245,19 @@ async function userEdit(edit: Edit): Promise<void> {
   }
   try {
     const result = await rpc<ApplyResult>({ op: 'apply', edit });
-    view?.applyEdit(edit, result);
+    showEdit(edit, result);
     post({ type: 'edit', edit });
     refreshSource?.();
   } catch (err) {
     showError(`The edit could not be applied: ${message(err)}`);
     post({ type: 'error', message: message(err) });
   }
+}
+
+/** Passes an applied edit to the view; a batch part by part. */
+function showEdit(edit: Edit, result: ApplyResult): void {
+  if (edit.kind === 'batch') edit.edits.forEach((e, i) => showEdit(e, result.batch?.[i] ?? {}));
+  else view?.applyEdit(edit, result);
 }
 
 function message(err: unknown): string {
@@ -241,6 +270,7 @@ async function onInit(msg: Extract<HostMessage, { type: 'init' }>): Promise<void
   const gen = ++generation;
   loaded = false;
   queued = [];
+  closeView();
   showLoading();
   try {
     startWorker();
@@ -263,7 +293,7 @@ async function onInit(msg: Extract<HostMessage, { type: 'init' }>): Promise<void
 /** Applies an edit that the host sends (undo, redo, mirrored edit); not echoed back. */
 async function hostEdit(edit: Edit): Promise<void> {
   try {
-    view?.applyEdit(edit, await rpc<ApplyResult>({ op: 'apply', edit }));
+    showEdit(edit, await rpc<ApplyResult>({ op: 'apply', edit }));
     refreshSource?.();
   } catch (err) {
     post({ type: 'error', message: message(err) });

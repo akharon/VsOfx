@@ -1,4 +1,4 @@
-import type { ApplyResult, CellEdit, CellView, Edit, MergeRange, SheetData, SheetModel } from '../../shared/model';
+import type { ApplyResult, CellEdit, CellStyle, CellView, Edit, MergeRange, SheetData, SheetEdit, SheetModel } from '../../shared/model';
 import { MAX_COLS, MAX_ROWS } from '../../shared/model';
 import type { FormatAdapter } from './Adapter';
 import { isEl, MIME_ODS, NS, odfText, openOdf, saveOdf, setOdfText, type OdfPackage } from './odf';
@@ -30,7 +30,20 @@ export class OdsAdapter implements FormatAdapter {
   readonly readonly = false;
   private pkg!: OdfPackage;
   private tables: Element[] = [];
-  private readonly originals = new Map<string, Original>();
+  private readonly originals = new Map<Element, Map<string, Original>>();
+  /** Sheets removed by the user, kept so that undo restores them with their content. */
+  private readonly removed: Element[] = [];
+  /** Cell style names -> wrap / alignment they set. */
+  private wraps = new Map<string, CellStyle>();
+  /** Column style name -> width in characters. */
+  private colStyles = new Map<string, number>();
+
+  private view(cell: Element): CellView | null {
+    const v = cellView(cell);
+    const st = this.wraps.get(cell.getAttributeNS(NS.table, 'style-name') ?? '');
+    if (!st) return v;
+    return { ...(v ?? { text: '' }), style: { ...v?.style, ...st } };
+  }
 
   async load(bytes: Uint8Array, edits: Edit[]): Promise<SheetModel> {
     this.pkg = openOdf(bytes, MIME_ODS);
@@ -38,28 +51,89 @@ export class OdsAdapter implements FormatAdapter {
     if (!sheet) throw new Error('This OpenDocument file has no spreadsheet body');
     this.tables = Array.from(sheet.childNodes).filter((n): n is Element => isEl(n, NS.table, 'table'));
     for (const e of edits) this.applyEdit(e);
-    return { type: 'sheet', sheets: this.tables.map((t) => this.sheetData(t)) };
+    this.wraps = cellStyles(this.pkg.content);
+    this.colStyles = columnStyles(this.pkg.content);
+    return { type: 'sheet', sheets: this.tables.map((t) => this.sheetData(t)), sheetOps: true };
   }
 
   applyEdit(edit: Edit): ApplyResult {
+    if (edit.kind === 'sheet') return this.applySheet(edit);
+    if (edit.kind === 'colwidth') {
+      const table = this.tables[edit.sheet];
+      if (!table) throw new Error(`Sheet ${edit.sheet} does not exist`);
+      setColumnWidth(this.pkg.content, table, edit.col, edit.width);
+      return {};
+    }
+    if (edit.kind === 'wrap' || edit.kind === 'align') {
+      const table = this.tables[edit.sheet];
+      if (!table) throw new Error(`Sheet ${edit.sheet} does not exist`);
+      const cell = locateCell(this.pkg.content, locateRow(this.pkg.content, table, edit.row), edit.col);
+      setCellProps(this.pkg.content, cell, edit.kind === 'wrap' ? { wrap: edit.wrap } : { h: edit.align.h ?? null, v: edit.align.v ?? null });
+      this.wraps = cellStyles(this.pkg.content);
+      return { cell: this.view(cell) };
+    }
     if (edit.kind !== 'cell') throw new Error('Not a cell edit');
     const table = this.tables[edit.sheet];
     if (!table) throw new Error(`Sheet ${edit.sheet} does not exist`);
     const row = locateRow(this.pkg.content, table, edit.row);
     const cell = locateCell(this.pkg.content, row, edit.col);
-    const key = `${edit.sheet}:${edit.row}:${edit.col}`;
-    let orig = this.originals.get(key);
+    const key = `${edit.row}:${edit.col}`;
+    let originals = this.originals.get(table);
+    if (!originals) this.originals.set(table, (originals = new Map()));
+    let orig = originals.get(key);
     if (!orig) {
       const view = cellView(cell);
       orig = { input: view?.input ?? view?.text ?? '', snapshot: cell.cloneNode(true) as Element };
-      this.originals.set(key, orig);
+      // the cell's own style (wrap) is not part of what the user types
+      orig.snapshot.removeAttributeNS(NS.table, 'style-name');
+      originals.set(key, orig);
     }
+    const keepStyle = cell.getAttributeNS(NS.table, 'style-name');
     if (edit.value === orig.input) restore(cell, orig.snapshot);
     else writeCell(this.pkg.content, cell, edit);
+    if (keepStyle) cell.setAttributeNS(NS.table, `${prefixOf(this.pkg.content, NS.table, 'table')}:style-name`, keepStyle);
     const others = this.recalc().filter((o) => !(o.sheet === edit.sheet && o.row === edit.row && o.col === edit.col));
-    const res: ApplyResult = { cell: cellView(cell) };
+    const res: ApplyResult = { cell: this.view(cell) };
     if (others.length) res.others = others;
     return res;
+  }
+
+  private applySheet(edit: SheetEdit): ApplyResult {
+    const doc = this.pkg.content;
+    const tp = prefixOf(doc, NS.table, 'table');
+    if (edit.op === 'rename') {
+      const t = this.tables[edit.index];
+      if (!t) throw new Error(`Sheet ${edit.index} does not exist`);
+      t.setAttributeNS(NS.table, `${tp}:name`, edit.name);
+      return {};
+    }
+    if (edit.op === 'remove') {
+      const t = this.tables[edit.index];
+      if (!t) throw new Error(`Sheet ${edit.index} does not exist`);
+      if (this.tables.length <= 1) throw new Error('A workbook needs at least one sheet');
+      t.parentNode?.removeChild(t);
+      this.tables.splice(edit.index, 1);
+      this.removed.push(t);
+      return {};
+    }
+    const at = this.removed.map((t) => t.getAttributeNS(NS.table, 'name')).lastIndexOf(edit.name);
+    let t: Element;
+    if (at >= 0) t = this.removed.splice(at, 1)[0]!;
+    else {
+      const mk = (local: string) => doc.createElementNS(NS.table, `${tp}:${local}`);
+      t = mk('table');
+      t.setAttributeNS(NS.table, `${tp}:name`, edit.name);
+      const row = mk('table-row');
+      row.appendChild(mk('table-cell'));
+      t.appendChild(mk('table-column'));
+      t.appendChild(row);
+    }
+    const before = this.tables[edit.index];
+    const last = this.tables[this.tables.length - 1]!;
+    if (before) before.parentNode!.insertBefore(t, before);
+    else last.parentNode!.insertBefore(t, last.nextSibling);
+    this.tables.splice(Math.min(edit.index, this.tables.length), 0, t);
+    return { sheet: this.sheetData(t) };
   }
 
   /** Recomputes all formulas of the workbook; returns the cells whose result changed. */
@@ -87,7 +161,7 @@ export class OdsAdapter implements FormatAdapter {
         const [r, c] = key.split(':').map(Number) as [number, number];
         const v = calc.cell(si, r, c);
         if (v === UNSUPPORTED) continue;
-        if (setResult(this.pkg.content, el, v) && r < MAX_ROWS && c < MAX_COLS) changed.push({ sheet: si, row: r, col: c, cell: cellView(el) });
+        if (setResult(this.pkg.content, el, v) && r < MAX_ROWS && c < MAX_COLS) changed.push({ sheet: si, row: r, col: c, cell: this.view(el) });
       }
     });
     return changed;
@@ -122,6 +196,36 @@ export class OdsAdapter implements FormatAdapter {
       r += rep;
     }
     const rowCount = lastContent + 1;
+    // wrapped cells
+    let wr = 0;
+    for (const rowEl of rowElements(table)) {
+      const rep = repeatOf(rowEl, ROW_REPEAT);
+      let c = 0;
+      for (const cell of cellElements(rowEl)) {
+        const crep = repeatOf(cell, COL_REPEAT);
+        const st = this.wraps.get(cell.getAttributeNS(NS.table, 'style-name') ?? '');
+        if (st) {
+          for (let k = 0; k < rep && wr + k < rowCount; k++) {
+            const row = rows[wr + k];
+            for (let j = 0; j < crep && c + j < MAX_COLS; j++) {
+              const v = row?.[c + j];
+              if (row && v) row[c + j] = { ...v, style: { ...v.style, ...st } };
+            }
+          }
+        }
+        c += crep;
+      }
+      wr += rep;
+      if (wr >= rowCount) break;
+    }
+    const widths: (number | null)[] = [];
+    let ci = 0;
+    for (const col of columnElements(table)) {
+      const rep = repeatOf(col, COL_REPEAT);
+      const w = this.colStyles.get(col.getAttributeNS(NS.table, 'style-name') ?? '') ?? null;
+      for (let k = 0; k < rep && ci < MAX_COLS; k++) widths[ci++] = w;
+      if (ci >= MAX_COLS) break;
+    }
     const out = Array.from({ length: rowCount }, (_, i) => rows[i] ?? []);
     return {
       name: table.getAttributeNS(NS.table, 'name') ?? 'Sheet',
@@ -129,13 +233,214 @@ export class OdsAdapter implements FormatAdapter {
       rowCount,
       colCount: Math.min(colCount, MAX_COLS),
       merges: merges.filter((m) => m.r1 < rowCount),
-      colWidths: Array.from({ length: Math.min(colCount, MAX_COLS) }, () => null),
+      colWidths: Array.from({ length: Math.min(colCount, MAX_COLS) }, (_, i) => widths[i] ?? null),
       truncated: truncated || colCount > MAX_COLS,
     };
   }
 }
 
 // ---- DOM helpers ---------------------------------------------------------
+
+/** One character of the default font, for column widths given in characters. */
+const CHAR_CM = 0.2;
+
+function automaticStyles(doc: Document): Element {
+  const root = doc.documentElement;
+  let auto = Array.from(root.childNodes).find((n) => isEl(n, NS.office, 'automatic-styles')) as Element | undefined;
+  if (!auto) {
+    auto = doc.createElementNS(NS.office, `${prefixOf(doc, NS.office, 'office')}:automatic-styles`);
+    root.insertBefore(auto, Array.from(root.childNodes).find((n) => isEl(n, NS.office, 'body')) ?? null);
+  }
+  return auto;
+}
+
+function styleEl(doc: Document, local: string, attrs: Record<string, string>): Element {
+  const sp = prefixOf(doc, NS.style, 'style');
+  if (!doc.documentElement.hasAttribute(`xmlns:${sp}`)) doc.documentElement.setAttribute(`xmlns:${sp}`, NS.style);
+  const fp = prefixOf(doc, NS.fo, 'fo');
+  if (!doc.documentElement.hasAttribute(`xmlns:${fp}`)) doc.documentElement.setAttribute(`xmlns:${fp}`, NS.fo);
+  const e = doc.createElementNS(NS.style, `${sp}:${local}`);
+  for (const [k, v] of Object.entries(attrs)) {
+    const [p, l] = k.split(':') as [string, string];
+    e.setAttributeNS(p === 'fo' ? NS.fo : NS.style, `${p === 'fo' ? fp : sp}:${l}`, v);
+  }
+  return e;
+}
+
+function findStyle(doc: Document, name: string): Element | undefined {
+  return descendantsNS(doc, NS.style, 'style').find((s) => s.getAttributeNS(NS.style, 'name') === name);
+}
+
+function parseLength(v: string | null): number | null {
+  const m = /^([\d.]+)(cm|mm|in|pt)$/.exec(v ?? '');
+  if (!m) return null;
+  const cm = Number(m[1]) * ({ cm: 1, mm: 0.1, in: 2.54, pt: 2.54 / 72 } as Record<string, number>)[m[2]!]!;
+  return Math.max(1, Math.round((cm / CHAR_CM) * 10) / 10);
+}
+
+function columnStyles(doc: Document): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const s of descendantsNS(doc, NS.style, 'style')) {
+    if (s.getAttributeNS(NS.style, 'family') !== 'table-column') continue;
+    const p = descendantsNS(s, NS.style, 'table-column-properties')[0];
+    const w = parseLength(p?.getAttributeNS(NS.style, 'column-width') ?? null);
+    const name = s.getAttributeNS(NS.style, 'name');
+    if (name && w) map.set(name, w);
+  }
+  return map;
+}
+
+/** Cell style name -> the wrap / alignment it sets (only styles that set any). */
+function cellStyles(doc: Document): Map<string, CellStyle> {
+  const map = new Map<string, CellStyle>();
+  for (const s of descendantsNS(doc, NS.style, 'style')) {
+    if (s.getAttributeNS(NS.style, 'family') !== 'table-cell') continue;
+    const name = s.getAttributeNS(NS.style, 'name');
+    const p = stylePropsOf(s);
+    const st: CellStyle = {};
+    if (p.wrap) st.wrap = true;
+    if (p.h) st.align = p.h;
+    if (p.v) st.valign = p.v;
+    if (name && Object.keys(st).length) map.set(name, st);
+  }
+  return map;
+}
+
+/** table:table-column elements in order (also inside column groups / header columns). */
+function columnElements(parent: Element): Element[] {
+  const out: Element[] = [];
+  for (let c = parent.firstChild; c; c = c.nextSibling) {
+    if (isEl(c, NS.table, 'table-column')) out.push(c as Element);
+    else if (isEl(c, NS.table, 'table-column-group') || isEl(c, NS.table, 'table-header-columns') || isEl(c, NS.table, 'table-columns')) {
+      out.push(...columnElements(c as Element));
+    }
+  }
+  return out;
+}
+
+function setColumnWidth(doc: Document, table: Element, col: number, width: number | null): void {
+  let pos = 0;
+  let target: Element | undefined;
+  const cols = columnElements(table);
+  for (const c of cols) {
+    const rep = repeatOf(c, COL_REPEAT);
+    if (col < pos + rep) {
+      target = splitRepeated(c, COL_REPEAT, col - pos);
+      break;
+    }
+    pos += rep;
+  }
+  const tp = prefixOf(doc, NS.table, 'table');
+  if (!target) {
+    // columns are declared before the rows
+    const firstRow = Array.from(table.childNodes).find((n) => isEl(n, NS.table, 'table-row') || isEl(n, NS.table, 'table-row-group') || isEl(n, NS.table, 'table-header-rows') || isEl(n, NS.table, 'table-rows')) ?? null;
+    const last = cols[cols.length - 1];
+    const ref = last ? last.nextSibling : firstRow;
+    const parent = last ? last.parentNode! : table;
+    if (col > pos) parent.insertBefore(newElement(doc, table, 'table-column', COL_REPEAT, col - pos), ref);
+    target = newElement(doc, table, 'table-column');
+    parent.insertBefore(target, ref);
+  }
+  if (width === null) {
+    target.removeAttributeNS(NS.table, 'style-name');
+    return;
+  }
+  const name = `VsofxCo${String(width).replace('.', '_')}`;
+  if (!findStyle(doc, name)) {
+    const s = styleEl(doc, 'style', { 'style:name': name, 'style:family': 'table-column' });
+    s.appendChild(styleEl(doc, 'table-column-properties', { 'style:column-width': `${(width * CHAR_CM).toFixed(3)}cm` }));
+    automaticStyles(doc).appendChild(s);
+  }
+  target.setAttributeNS(NS.table, `${tp}:style-name`, name);
+}
+
+/** Cell formatting the editor changes: wrap and alignment (undefined = as the cell's own style). */
+interface CellProps {
+  wrap?: boolean;
+  h?: 'left' | 'center' | 'right';
+  v?: 'top' | 'middle' | 'bottom';
+}
+const DERIVED = /_Vsofx(W[01])?(H[lcr])?(V[tmb])?$/;
+const H_CODE = { l: 'left', c: 'center', r: 'right' } as const;
+const V_CODE = { t: 'top', m: 'middle', b: 'bottom' } as const;
+
+/** Wrap / alignment as written in a cell style. */
+function stylePropsOf(s: Element | undefined): CellProps {
+  const out: CellProps = {};
+  if (!s) return out;
+  const cp = descendantsNS(s, NS.style, 'table-cell-properties')[0];
+  const pp = descendantsNS(s, NS.style, 'paragraph-properties')[0];
+  if (cp?.getAttributeNS(NS.fo, 'wrap-option') === 'wrap') out.wrap = true;
+  const ta = pp?.getAttributeNS(NS.fo, 'text-align');
+  if (ta === 'center') out.h = 'center';
+  else if (ta === 'end' || ta === 'right') out.h = 'right';
+  else if (ta === 'start' || ta === 'left') out.h = 'left';
+  const va = cp?.getAttributeNS(NS.style, 'vertical-align');
+  if (va === 'top' || va === 'middle' || va === 'bottom') out.v = va;
+  return out;
+}
+
+/**
+ * Changes wrap / alignment with a derived automatic style named after the cell's own style and the
+ * overrides (`<base>_Vsofx[W1][Hc][Vt]`), so the cell's other formatting is kept and undo goes back.
+ */
+function setCellProps(doc: Document, cell: Element, change: { wrap?: boolean; h?: CellProps['h'] | null; v?: CellProps['v'] | null }): void {
+  const tp = prefixOf(doc, NS.table, 'table');
+  const cur = cell.getAttributeNS(NS.table, 'style-name') ?? '';
+  const m = DERIVED.exec(cur);
+  const base = m ? cur.slice(0, m.index) : cur;
+  const own = stylePropsOf(base ? findStyle(doc, base) : undefined);
+  const over: CellProps = {};
+  if (m?.[1]) over.wrap = m[1] === 'W1';
+  if (m?.[2]) over.h = H_CODE[m[2][1] as keyof typeof H_CODE];
+  if (m?.[3]) over.v = V_CODE[m[3][1] as keyof typeof V_CODE];
+  if (change.wrap !== undefined) over.wrap = change.wrap;
+  if (change.h !== undefined) over.h = change.h ?? undefined;
+  if (change.v !== undefined) over.v = change.v ?? undefined;
+  // an override equal to the cell's own style is no override
+  if (over.wrap !== undefined && over.wrap === !!own.wrap) delete over.wrap;
+  if (over.h === undefined || over.h === own.h) delete over.h;
+  if (over.v === undefined || over.v === own.v) delete over.v;
+  if (over.wrap === undefined && !over.h && !over.v) {
+    if (base) cell.setAttributeNS(NS.table, `${tp}:style-name`, base);
+    else cell.removeAttributeNS(NS.table, 'style-name');
+    return;
+  }
+  const suffix = `${over.wrap === undefined ? '' : over.wrap ? 'W1' : 'W0'}${over.h ? `H${over.h[0]}` : ''}${over.v ? `V${over.v[0]}` : ''}`;
+  const name = `${base || 'Default'}_Vsofx${suffix}`;
+  if (!findStyle(doc, name)) {
+    const src = base ? findStyle(doc, base) : undefined;
+    let s: Element;
+    const auto = automaticStyles(doc);
+    if (src && src.parentNode === auto) {
+      s = src.cloneNode(true) as Element;
+      s.setAttributeNS(NS.style, `${prefixOf(doc, NS.style, 'style')}:name`, name);
+    } else {
+      s = styleEl(doc, 'style', { 'style:name': name, 'style:family': 'table-cell' });
+      if (base) s.setAttributeNS(NS.style, `${prefixOf(doc, NS.style, 'style')}:parent-style-name`, base);
+    }
+    let props = descendantsNS(s, NS.style, 'table-cell-properties')[0];
+    if (!props) {
+      props = styleEl(doc, 'table-cell-properties', {});
+      s.insertBefore(props, s.firstChild);
+    }
+    const fp = prefixOf(doc, NS.fo, 'fo');
+    const sp = prefixOf(doc, NS.style, 'style');
+    if (over.wrap !== undefined) props.setAttributeNS(NS.fo, `${fp}:wrap-option`, over.wrap ? 'wrap' : 'no-wrap');
+    if (over.v) props.setAttributeNS(NS.style, `${sp}:vertical-align`, over.v);
+    if (over.h) {
+      props.setAttributeNS(NS.style, `${sp}:text-align-source`, 'fix');
+      let pp = descendantsNS(s, NS.style, 'paragraph-properties')[0];
+      if (!pp) {
+        pp = styleEl(doc, 'paragraph-properties', {});
+        s.insertBefore(pp, props.nextSibling);
+      }
+      pp.setAttributeNS(NS.fo, `${fp}:text-align`, over.h === 'left' ? 'start' : over.h === 'right' ? 'end' : 'center');
+    }
+    auto.appendChild(s);
+  }
+  cell.setAttributeNS(NS.table, `${tp}:style-name`, name);
+}
 
 function repeatOf(el: Element, attr: string): number {
   const n = Number(el.getAttributeNS(NS.table, attr) || 1);

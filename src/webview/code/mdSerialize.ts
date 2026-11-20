@@ -18,7 +18,7 @@ function block(el: HTMLElement): string {
     case 'h4':
     case 'h5':
     case 'h6':
-      return `${'#'.repeat(Number(tag[1]))} ${inline(el).replace(/\n/g, ' ').trim()}`;
+      return `${'#'.repeat(Number(tag[1]))} ${inlineChildren(el).replace(/\n/g, ' ').trim()}`;
     case 'ul':
     case 'ol':
       return list(el);
@@ -42,9 +42,9 @@ function block(el: HTMLElement): string {
       return '';
     case 'div':
       // the browser wraps lines in <div> in some cases; a div with blocks inside is a container
-      return Array.from(el.children).some((c) => isBlock(c)) ? children(el) : escapeLineStart(inline(el).trim());
+      return Array.from(el.children).some((c) => isBlock(c)) ? children(el) : escapeLineStart(inlineChildren(el).trim());
     default:
-      return escapeLineStart(inline(el).trim());
+      return escapeLineStart(inlineChildren(el).trim());
   }
 }
 
@@ -52,7 +52,7 @@ const BLOCKS = new Set(['P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'UL', 'O
 const isBlock = (n: Node) => n.nodeType === 1 && BLOCKS.has((n as Element).tagName);
 
 /** Block children joined by blank lines; runs of inline content become paragraphs. */
-function children(el: HTMLElement): string {
+function children(el: HTMLElement, sep = '\n\n'): string {
   const out: string[] = [];
   let run: Node[] = [];
   const flushRun = () => {
@@ -68,7 +68,7 @@ function children(el: HTMLElement): string {
     } else run.push(c);
   }
   flushRun();
-  return out.join('\n\n');
+  return out.join(sep);
 }
 
 function list(el: HTMLElement): string {
@@ -89,7 +89,9 @@ function list(el: HTMLElement): string {
     const marker = ordered ? `${n++}${delim} ` : `${bullet} `;
     const box = li.querySelector(':scope > input.task, :scope > p > input.task') as HTMLInputElement | null;
     const task = box ? (box.hasAttribute('checked') || box.checked ? '[x] ' : '[ ] ') : '';
-    const body = children(li as HTMLElement).replace(/^\s+/, '');
+    // a tight item (no <p>) keeps its text and nested list on consecutive lines, else the list turns loose
+    const tight = !li.querySelector(':scope > p');
+    const body = children(li as HTMLElement, tight ? '\n' : '\n\n').replace(/^\s+/, '');
     const pad = ' '.repeat(marker.length);
     const lines = body.split('\n');
     items.push(marker + task + lines[0] + lines.slice(1).map((l) => '\n' + (l ? pad + l : '')).join(''));
@@ -176,4 +178,9 @@ function escape(s: string): string {
 /** Escapes what would turn the start of a paragraph into another block (heading, list ...). */
 export function escapeLineStart(s: string): string {
   return s.replace(/^(\s*)(#{1,6}\s|[-+]\s|\d+[.)]\s|>|={3,}|-{3,})/, (_m, sp: string, x: string) => `${sp}\\${x}`);
+}
+
+/** Inline Markdown of an element's content (not of the element itself: that would recurse for blocks). */
+function inlineChildren(el: Element): string {
+  return Array.from(el.childNodes).map(inline).join('');
 }

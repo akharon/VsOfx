@@ -18,9 +18,18 @@ export interface Run {
   href?: string;
 }
 
+export type HAlign = 'left' | 'center' | 'right' | 'justify';
+export type VAlign = 'top' | 'middle' | 'bottom';
+export const H_ALIGNS: readonly HAlign[] = ['left', 'center', 'right', 'justify'];
+export const V_ALIGNS: readonly VAlign[] = ['top', 'middle', 'bottom'];
+
 export interface ParaFmt {
   runs: Run[];
   block?: BlockKind;
+  /** Horizontal alignment of the paragraph (only set when the user changed it). */
+  align?: HAlign;
+  /** Vertical alignment of the table cell holding the paragraph (only set when changed). */
+  valign?: VAlign;
 }
 
 /** Task list items are plain paragraphs that start with one of these marks. */
@@ -51,7 +60,9 @@ export function isParaFmt(x: unknown): x is ParaFmt {
     Array.isArray(f['runs']) &&
     f['runs'].length <= 10_000 &&
     f['runs'].every(isRun) &&
-    (f['block'] === undefined || (BLOCK_KINDS as readonly unknown[]).includes(f['block']))
+    (f['block'] === undefined || (BLOCK_KINDS as readonly unknown[]).includes(f['block'])) &&
+    (f['align'] === undefined || (H_ALIGNS as readonly unknown[]).includes(f['align'])) &&
+    (f['valign'] === undefined || (V_ALIGNS as readonly unknown[]).includes(f['valign']))
   );
 }
 
@@ -109,9 +120,17 @@ export const MAX_TABLE_CELLS = 999;
 
 export const cellIndex = (t: Pick<TableSpec, 'id' | 'cols'>, r: number, c: number) => CELL_BASE + t.id * 1000 + r * t.cols + c;
 
+/** Paragraphs added by the user (Enter) get indices from here on: PARA_BASE + id. */
+export const PARA_BASE = 2_000_000;
+export const PARA_MAX = PARA_BASE + 999_999;
+export const isCellIndex = (i: number) => i >= CELL_BASE && i < PARA_BASE;
+export const isNewParaIndex = (i: number) => i >= PARA_BASE && i <= PARA_MAX;
+/** A paragraph something can be anchored after: a document paragraph or an added one. */
+export const isAnchorIndex = (i: number) => Number.isInteger(i) && i >= 0 && (i < CELL_BASE || isNewParaIndex(i));
+
 export function isTableSpec(x: unknown): x is TableSpec {
   if (typeof x !== 'object' || x === null) return false;
   const t = x as Record<string, unknown>;
   const int = (v: unknown, min: number, max: number) => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
-  return int(t['id'], 1, 999) && int(t['after'], 0, CELL_BASE - 1) && int(t['rows'], 1, 99) && int(t['cols'], 1, 20) && (t['rows'] as number) * (t['cols'] as number) <= MAX_TABLE_CELLS;
+  return int(t['id'], 1, 999) && isAnchorIndex(t['after'] as number) && int(t['rows'], 1, 99) && int(t['cols'], 1, 20) && (t['rows'] as number) * (t['cols'] as number) <= MAX_TABLE_CELLS;
 }

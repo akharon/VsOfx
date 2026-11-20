@@ -1,6 +1,6 @@
 // Types shared by the extension host and the webview. No runtime dependencies.
 import { inverseOp, isPdfEdit, type PdfEdit, type PdfStateJson } from './pdf';
-import { isParaFmt, isTableSpec, type ParaFmt, type TableSpec } from './richtext';
+import { isAnchorIndex, isNewParaIndex, isParaFmt, isTableSpec, type ParaFmt, type TableSpec } from './richtext';
 
 export type CodeLang = 'markdown';
 export type Format = 'docx' | 'xlsx' | 'pptx' | 'odt' | 'ods' | 'odp' | 'odg' | 'pdf' | 'csv' | CodeLang;
@@ -81,7 +81,80 @@ export interface TableEdit {
   table: TableSpec;
 }
 
-export type Edit = CellEdit | ParagraphEdit | PdfEdit | TextEdit | TableEdit;
+/** Word/Writer: a paragraph added after paragraph `after` (Enter), or removed again. */
+export interface NewParaEdit {
+  kind: 'newpara';
+  op: 'insert' | 'remove';
+  index: number; // PARA_BASE + id
+  after: number;
+  fmt: ParaFmt;
+}
+
+/** Spreadsheets: add, remove or rename a sheet. `old` is the previous name (rename). */
+export interface SheetEdit {
+  kind: 'sheet';
+  op: 'add' | 'remove' | 'rename';
+  index: number;
+  name: string;
+  old?: string;
+}
+
+/** Spreadsheets: column width in characters (null = default). */
+export interface ColWidthEdit {
+  kind: 'colwidth';
+  sheet: number;
+  col: number;
+  width: number | null;
+  old: number | null;
+}
+
+/** Spreadsheets: wrap text in a cell on or off. */
+export interface WrapEdit {
+  kind: 'wrap';
+  sheet: number;
+  row: number;
+  col: number;
+  wrap: boolean;
+  old: boolean;
+}
+
+/** Cell alignment; a missing side is the default (left / bottom in most programs). */
+export interface CellAlign {
+  h?: 'left' | 'center' | 'right';
+  v?: 'top' | 'middle' | 'bottom';
+}
+
+/** Spreadsheets: horizontal and vertical alignment of a cell. */
+export interface AlignEdit {
+  kind: 'align';
+  sheet: number;
+  row: number;
+  col: number;
+  align: CellAlign;
+  old: CellAlign;
+}
+
+const isCellAlign = (x: unknown): x is CellAlign => {
+  if (typeof x !== 'object' || x === null) return false;
+  const a = x as Record<string, unknown>;
+  return (
+    Object.keys(a).every((k) => k === 'h' || k === 'v') &&
+    (a['h'] === undefined || a['h'] === 'left' || a['h'] === 'center' || a['h'] === 'right') &&
+    (a['v'] === undefined || a['v'] === 'top' || a['v'] === 'middle' || a['v'] === 'bottom')
+  );
+};
+
+/** Several edits that are done and undone together (paste, clearing a range, Enter). */
+export interface BatchEdit {
+  kind: 'batch';
+  edits: Edit[];
+}
+
+export type Edit = CellEdit | ParagraphEdit | PdfEdit | TextEdit | TableEdit | NewParaEdit | SheetEdit | ColWidthEdit | WrapEdit | AlignEdit | BatchEdit;
+
+export const MAX_SHEET_NAME = 100;
+/** Sheet names that Excel and LibreOffice both accept. */
+export const validSheetName = (n: string) => n.trim() !== '' && n.length <= 31 && !/[\\/?*[\]:']/.test(n);
 
 /** Runtime check for messages coming from the webview (the host does not trust them). */
 export function isEdit(x: unknown): x is Edit {
@@ -103,6 +176,27 @@ export function isEdit(x: unknown): x is Edit {
     );
   }
   if (e['kind'] === 'table') return (e['op'] === 'insert' || e['op'] === 'remove') && isTableSpec(e['table']);
+  if (e['kind'] === 'newpara') {
+    return (e['op'] === 'insert' || e['op'] === 'remove') && isNewParaIndex(e['index'] as number) && isAnchorIndex(e['after'] as number) && isParaFmt(e['fmt']);
+  }
+  if (e['kind'] === 'sheet') {
+    return (
+      (e['op'] === 'add' || e['op'] === 'remove' || e['op'] === 'rename') &&
+      int(e['index']) &&
+      (e['index'] as number) < 1000 &&
+      typeof e['name'] === 'string' &&
+      (e['name'] as string).length <= MAX_SHEET_NAME &&
+      (e['old'] === undefined || (typeof e['old'] === 'string' && (e['old'] as string).length <= MAX_SHEET_NAME))
+    );
+  }
+  const width = (v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 255);
+  if (e['kind'] === 'colwidth') return int(e['sheet']) && int(e['col']) && width(e['width']) && width(e['old']);
+  if (e['kind'] === 'wrap') return int(e['sheet']) && int(e['row']) && int(e['col']) && typeof e['wrap'] === 'boolean' && typeof e['old'] === 'boolean';
+  if (e['kind'] === 'align') return int(e['sheet']) && int(e['row']) && int(e['col']) && isCellAlign(e['align']) && isCellAlign(e['old']);
+  if (e['kind'] === 'batch') {
+    const list = e['edits'];
+    return Array.isArray(list) && list.length > 0 && list.length <= 100_000 && list.every((x) => isEdit(x) && (x as Edit).kind !== 'batch');
+  }
   return false;
 }
 
@@ -112,6 +206,15 @@ export function inverseEdit(e: Edit): Edit {
   if (e.kind === 'text') return { kind: 'text', at: e.at, del: e.ins, ins: e.del };
   if (e.kind === 'table') return { ...e, op: e.op === 'insert' ? 'remove' : 'insert' };
   if (e.kind === 'cell') return { ...e, value: e.old, old: e.value };
+  if (e.kind === 'colwidth') return { ...e, width: e.old, old: e.width };
+  if (e.kind === 'wrap') return { ...e, wrap: e.old, old: e.wrap };
+  if (e.kind === 'align') return { ...e, align: e.old, old: e.align };
+  if (e.kind === 'newpara') return { ...e, op: e.op === 'insert' ? 'remove' : 'insert' };
+  if (e.kind === 'batch') return { kind: 'batch', edits: e.edits.map(inverseEdit).reverse() };
+  if (e.kind === 'sheet') {
+    if (e.op === 'rename') return { kind: 'sheet', op: 'rename', index: e.index, name: e.old ?? e.name, old: e.name };
+    return { ...e, op: e.op === 'add' ? 'remove' : 'add' };
+  }
   const inv: ParagraphEdit = { kind: 'paragraph', index: e.index, text: e.old, old: e.text };
   if (e.oldFmt) inv.fmt = e.oldFmt;
   if (e.fmt) inv.oldFmt = e.fmt;
@@ -127,6 +230,8 @@ export interface CellStyle {
   color?: string; // CSS color
   fill?: string; // CSS color
   align?: 'left' | 'center' | 'right';
+  valign?: 'top' | 'middle' | 'bottom';
+  wrap?: boolean;
 }
 
 export interface CellView {
@@ -162,6 +267,8 @@ export interface SheetData {
 export interface SheetModel {
   type: 'sheet';
   sheets: SheetData[];
+  /** Sheets can be added, removed and renamed (not CSV). */
+  sheetOps?: boolean;
 }
 
 export interface TextModel {
@@ -172,6 +279,8 @@ export interface TextModel {
   rich?: boolean;
   /** Word: tables inserted by (replayed) edits, with the HTML of each cell (row-major). */
   tables?: { table: TableSpec; cells: string[] }[];
+  /** Paragraphs added by (replayed) edits, in the order they were added. */
+  paras?: { index: number; after: number; fmt: ParaFmt }[];
 }
 
 export interface SlideView {
@@ -216,6 +325,10 @@ export interface ApplyResult {
   cell?: CellView | null;
   /** Other cells whose formula results changed because of the edit. */
   others?: { sheet: number; row: number; col: number; cell: CellView | null }[];
+  /** Results of the parts of a batch edit, in order. */
+  batch?: ApplyResult[];
+  /** Sheet edits: the sheet as it is after the edit (add / restore). */
+  sheet?: SheetData;
 }
 
 /** Display limits for spreadsheets. */

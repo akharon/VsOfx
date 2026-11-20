@@ -104,3 +104,38 @@
   font-family: var(--vscode-editor-font-family, monospace); font-size: var(--vscode-editor-font-size, 13px); line-height: 1.5;
 }
 .md-body[contenteditable='true'] { outline: none; caret-color: var(--vscode-editorCursor-foreground, currentColor); }
+
+/* ---- essentials: added paragraphs, table size bar, cell ranges, sheet tabs ---- */
+.page [data-p]:empty { min-height: 1.4em; }
+.page li[data-p]:empty::before, .page p[data-p]:empty::before { content: '\200b'; }
+.page .tab { white-space: pre; }
+.tablebar .tb-field { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.tablebar input[type='number'] { width: 4.5em; }
+.tablebar input[type='number']:invalid { outline: 1px solid var(--vscode-inputValidation-errorBorder, #be1100); }
+table.grid td.inrange { background-color: var(--vscode-editor-selectionBackground, rgba(0, 120, 215, 0.25)) !important; }
+table.grid { user-select: none; }
+table.grid td.editing { user-select: text; }
+.tabs .tab.tab-action { padding: 5px 10px; }
+.tabs .tab.tab-action:disabled { opacity: 0.4; }
+.tabs .tab-input { width: 10em; font: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-focusBorder); padding: 0 4px; }
+.tabs .tab-input.invalid { border-color: var(--vscode-inputValidation-errorBorder, #be1100); }
+
+/* ---- sheets: wrap, header selection, column resize ---- */
+table.grid td.wrap { white-space: pre-wrap; word-break: break-word; text-overflow: clip; height: auto; line-height: 1.35; vertical-align: top; }
+table.grid th.colhead { position: sticky; cursor: s-resize; }
+table.grid th.rowhead { cursor: e-resize; }
+table.grid th.corner { cursor: cell; }
+table.grid th.colhead .col-grip { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 4; }
+table.grid th.colhead .col-grip:hover { background: var(--vscode-focusBorder); opacity: 0.6; }
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none; }
+
+/* ---- alignment set in the editor (Word, Writer) ---- */
+.page [data-align='left'] { text-align: left; }
+.page [data-align='center'] { text-align: center; }
+.page [data-align='right'] { text-align: right; }
+.page [data-align='justify'] { text-align: justify; }
+.page td[data-valign='top'], .page th[data-valign='top'] { vertical-align: top; }
+.page td[data-valign='middle'], .page th[data-valign='middle'] { vertical-align: middle; }
+.page td[data-valign='bottom'], .page th[data-valign='bottom'] { vertical-align: bottom; }
+/* Markdown table size bar */
+.md-tablebar .tb-field input { width: 4em; }

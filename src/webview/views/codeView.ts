@@ -94,9 +94,16 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
   tb.extra.append(linkBar);
   let savedRange: Range | undefined;
 
+  let alignHBtn: HTMLButtonElement | undefined;
+  let tableBar: HTMLDivElement | undefined;
+  let rowsIn!: HTMLInputElement;
+  let colsIn!: HTMLInputElement;
+  let tableHint!: HTMLSpanElement;
+  let tableRange: Range | undefined;
+  let tableSel: { start: number; end: number } | undefined;
   if (!readonly) {
     tb.separator();
-    const fmt = (title: string, ic: IconName, vis: () => void, src: (s: Selection) => Selection) =>
+    const fmt =(title: string, ic: IconName, vis: () => void, src: (s: Selection) => Selection) =>
       tb.button('', title, () => (mode === 'visual' ? (vis(), body.focus()) : transformSelection(src)), ic);
     fmt('Bold (Ctrl+B)', 'bold', () => exec('bold'), (s) => toggleWrap(s, '**'));
     fmt('Italic (Ctrl+I)', 'italic', () => exec('italic'), (s) => toggleWrap(s, '_'));
@@ -116,10 +123,13 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
       const at = s.start + label.length + 3;
       return { text: s.text.slice(0, s.start) + ins + s.text.slice(s.end), start: at, end: at + 8 };
     });
-    fmt('Table', 'table', insertTable, (s) => {
-      const t = '\n| Column 1 | Column 2 |\n| -------- | -------- |\n| Cell     | Cell     |\n';
-      return { text: s.text.slice(0, s.end) + t + s.text.slice(s.end), start: s.end + 3, end: s.end + 11 };
-    });
+    const tableBtn = tb.button('', 'Table: choose its size, inserted at the cursor', () => openTableBar(), 'table');
+    tableBtn.addEventListener('mousedown', (ev) => ev.preventDefault());
+    alignHBtn = tb.button('', 'Horizontal alignment of the table column with the cursor: left → center → right', () => alignColumn(), 'alignH');
+    alignHBtn.addEventListener('mousedown', (ev) => ev.preventDefault());
+    const vBtn = tb.button('', 'Vertical alignment: Markdown cannot store it', () => {}, 'alignV');
+    vBtn.disabled = true;
+    buildTableBar();
   }
   tb.spacer();
   const info = tb.info();
@@ -304,11 +314,140 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
     }
     scheduleSync();
   }
-  function insertTable(): void {
-    exec(
-      'insertHTML',
-      '<table><thead><tr><th>Column 1</th><th>Column 2</th></tr></thead><tbody><tr><td>Cell</td><td>Cell</td></tr></tbody></table><p><br></p>',
-    );
+  // ---- table size bar (state declared with the toolbar) ----
+  function buildTableBar(): void {
+    tableBar = document.createElement('div');
+    tableBar.className = 'findbar linkbar tablebar md-tablebar';
+    tableBar.hidden = true;
+    const num = (label: string, value: number, max: number) => {
+      const wrap = document.createElement('label');
+      wrap.className = 'tb-field';
+      wrap.textContent = label;
+      const i = document.createElement('input');
+      i.type = 'number';
+      i.min = '1';
+      i.max = String(max);
+      i.value = String(value);
+      i.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key === 'Enter') doInsertTable();
+        else if (ev.key === 'Escape') closeTableBar();
+      });
+      wrap.appendChild(i);
+      return { wrap, i };
+    };
+    const rows = num('Rows', 3, 99);
+    const cols = num('Columns', 3, 20);
+    rowsIn = rows.i;
+    colsIn = cols.i;
+    const mk = (label: string, fn: () => void) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tb-btn';
+      b.textContent = label;
+      b.addEventListener('mousedown', (ev) => ev.preventDefault());
+      b.addEventListener('click', fn);
+      return b;
+    };
+    tableHint = document.createElement('span');
+    tableHint.className = 'find-status';
+    tableHint.textContent = 'rows below the header row';
+    tableBar.append(rows.wrap, cols.wrap, mk('Insert', doInsertTable), mk('Close', closeTableBar), tableHint);
+    tb.extra.append(tableBar);
+  }
+  function openTableBar(): void {
+    if (!tableBar) return;
+    const sel = window.getSelection();
+    tableRange = mode === 'visual' && sel && sel.rangeCount && body.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : undefined;
+    tableSel = mode === 'source' ? { start: ta.selectionStart, end: ta.selectionEnd } : undefined;
+    tableBar.hidden = false;
+    rowsIn.focus();
+    rowsIn.select();
+  }
+  function closeTableBar(): void {
+    if (tableBar) tableBar.hidden = true;
+    if (mode === 'visual') {
+      body.focus();
+      const sel = window.getSelection();
+      if (tableRange && sel) {
+        sel.removeAllRanges();
+        sel.addRange(tableRange);
+      }
+    } else ta.focus();
+  }
+  function doInsertTable(): void {
+    const rows = Math.round(Number(rowsIn.value));
+    const cols = Math.round(Number(colsIn.value));
+    if (!(rows >= 1 && rows <= 99 && cols >= 1 && cols <= 20)) {
+      tableHint.textContent = '1-99 rows, 1-20 columns';
+      return;
+    }
+    const keep = tableSel;
+    closeTableBar();
+    insertTable(rows, cols, keep);
+  }
+  /** A table with a header row and `rows` body rows. */
+  function insertTable(rows: number, cols: number, at?: { start: number; end: number }): void {
+    const heads = Array.from({ length: cols }, (_, i) => `Column ${i + 1}`);
+    if (mode === 'visual') {
+      const th = heads.map((h) => `<th>${h}</th>`).join('');
+      const tr = `<tr>${'<td><br></td>'.repeat(cols)}</tr>`.repeat(rows);
+      exec('insertHTML', `<table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table><p><br></p>`);
+      return;
+    }
+    if (at) {
+      ta.selectionStart = at.start;
+      ta.selectionEnd = at.end;
+    }
+    transformSelection((s) => {
+      const line = (cells: string[]) => `| ${cells.join(' | ')} |`;
+      const t = [line(heads), line(heads.map(() => '---')), ...Array.from({ length: rows }, () => line(heads.map(() => '   ')))].join('\n');
+      const before = s.text.slice(0, s.end);
+      const pre = before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+      const ins = `${pre}${t}\n`;
+      const at0 = s.end + pre.length + 2;
+      return { text: before + ins + s.text.slice(s.end), start: at0, end: at0 + heads[0]!.length };
+    });
+  }
+  /** Cycles the alignment of the table column with the cursor (Markdown stores it per column). */
+  function alignColumn(): void {
+    if (mode !== 'visual') {
+      transformSelection((s) => {
+        // source: the delimiter row of the table around the cursor, column under the cursor
+        const lines = s.text.split('\n');
+        let pos = 0;
+        let li = 0;
+        while (li < lines.length - 1 && pos + lines[li]!.length < s.start) pos += lines[li++]!.length + 1;
+        const cellAt = (s.text.slice(pos, s.start).match(/(?<!\\)\|/g)?.length ?? 0) - (lines[li]!.trimStart().startsWith('|') ? 1 : 0);
+        let top = li;
+        while (top > 0 && /^\s*\|/.test(lines[top - 1]!)) top--;
+        const d = top + 1;
+        if (!/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(lines[d] ?? '') || !/\|/.test(lines[li] ?? '')) return s;
+        const parts = lines[d]!.trim().replace(/^\||\|$/g, '').split('|');
+        const p = parts[Math.max(0, Math.min(parts.length - 1, cellAt))]!.trim();
+        const cur = p.startsWith(':') && p.endsWith(':') ? 'center' : p.endsWith(':') ? 'right' : 'left';
+        const next = cur === 'left' ? ':---:' : cur === 'center' ? '---:' : '---';
+        parts[Math.max(0, Math.min(parts.length - 1, cellAt))] = ` ${next} `;
+        lines[d] = `|${parts.join('|')}|`;
+        const text = lines.join('\n');
+        return { text, start: s.start, end: s.start };
+      });
+      return;
+    }
+    const cell = currentElement()?.closest<HTMLTableCellElement>('td,th');
+    const table = cell?.closest('table');
+    if (!cell || !table) {
+      if (alignHBtn) alignHBtn.title = 'Markdown aligns only table columns: put the cursor in a table cell';
+      return;
+    }
+    const col = cell.cellIndex;
+    const cur = cell.style.textAlign || 'left';
+    const next = cur === 'left' ? 'center' : cur === 'center' ? 'right' : '';
+    for (const tr of Array.from(table.rows)) {
+      const c = tr.cells[col];
+      if (c) c.style.textAlign = next;
+    }
+    syncVisual();
   }
   function openLinkBar(): void {
     if (mode !== 'visual') return;

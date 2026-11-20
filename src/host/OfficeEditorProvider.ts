@@ -336,6 +336,17 @@ function editLabel(edit: Edit): string {
   if (edit.kind === 'pdf') return pdfEditLabel(edit.op);
   if (edit.kind === 'text') return edit.del === '' ? 'Insert text' : edit.ins === '' ? 'Delete text' : 'Edit text';
   if (edit.kind === 'table') return edit.op === 'insert' ? 'Insert table' : 'Remove table';
+  if (edit.kind === 'newpara') return edit.op === 'insert' ? 'New paragraph' : 'Remove paragraph';
+  if (edit.kind === 'sheet') return edit.op === 'add' ? 'Add sheet' : edit.op === 'remove' ? 'Delete sheet' : 'Rename sheet';
+  if (edit.kind === 'colwidth') return 'Column width';
+  if (edit.kind === 'wrap') return 'Wrap text';
+  if (edit.kind === 'align') return 'Align';
+  if (edit.kind === 'batch') {
+    if (edit.edits.some((e) => e.kind === 'wrap')) return 'Wrap text';
+    if (edit.edits.some((e) => e.kind === 'align')) return 'Align';
+    if (edit.edits.some((e) => e.kind === 'newpara')) return 'New paragraph';
+    return edit.edits.every((e) => e.kind === 'cell' && e.value === '') ? 'Clear cells' : 'Paste';
+  }
   if (edit.kind === 'paragraph' && edit.fmt && edit.oldFmt && edit.text === edit.old) return 'Format paragraph';
   return edit.kind === 'cell' ? 'Edit cell' : 'Edit paragraph';
 }

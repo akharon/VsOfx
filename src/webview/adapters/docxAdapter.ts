@@ -1,7 +1,7 @@
 import * as MammothNS from 'mammoth';
 import type { ApplyResult, Edit, TextModel } from '../../shared/model';
-import { CELL_BASE, cellIndex, fmtEquals, runsToHtml, type ParaFmt, type TableSpec } from '../../shared/richtext';
-import { buildTable, DocxParts, insertTablesAfter, writeParagraph } from './docxWrite';
+import { cellIndex, fmtEquals, isCellIndex, isNewParaIndex, runsText, runsToHtml, type ParaFmt, type TableSpec } from '../../shared/richtext';
+import { buildTable, DocxParts, insertTablesAfter, newParagraphAfter, writeParagraph } from './docxWrite';
 import { sanitizeChildren, parseHtmlFragment } from '../sanitize';
 import type { FormatAdapter } from './Adapter';
 import { descendantsNS, hasAncestor, normText, parseXml, serializeXml, xmlSafe } from './xml';
@@ -71,6 +71,8 @@ export class DocxAdapter implements FormatAdapter {
   private readonly originals = new Map<number, ParaState>();
   /** Tables inserted by the user, by id. Their cells are paragraphs with virtual indices. */
   private readonly tables = new Map<number, TableSpec>();
+  /** Paragraphs added by the user (Enter), in insertion order: index -> anchor paragraph. */
+  private readonly newParas = new Map<number, number>();
   /** Fraction of non-empty paragraphs that could be matched to a rendered block (for tests/diagnostics). */
   mappedRatio = 1;
 
@@ -98,7 +100,8 @@ export class DocxAdapter implements FormatAdapter {
       }
       return { table, cells };
     });
-    return { type: 'text', html: this.render(), rich: true, tables };
+    const paras = [...this.newParas].map(([index, after]) => ({ index, after, fmt: this.edited.get(index)?.fmt ?? { runs: [] } }));
+    return { type: 'text', html: this.render(), rich: true, tables, paras };
   }
 
   applyEdit(edit: Edit): ApplyResult {
@@ -107,8 +110,26 @@ export class DocxAdapter implements FormatAdapter {
       else this.tables.delete(edit.table.id);
       return {};
     }
+    if (edit.kind === 'newpara') {
+      if (edit.op === 'insert') {
+        this.newParas.set(edit.index, edit.after);
+        this.edited.set(edit.index, { text: runsText(edit.fmt.runs), fmt: edit.fmt });
+      } else {
+        // paragraphs and tables added after this one now follow its own anchor
+        const own = this.newParas.get(edit.index);
+        if (own !== undefined) {
+          for (const [i, a] of this.newParas) if (a === edit.index) this.newParas.set(i, own);
+          for (const [id, t] of this.tables) if (t.after === edit.index) this.tables.set(id, { ...t, after: own });
+        }
+        this.newParas.delete(edit.index);
+        this.edited.delete(edit.index);
+        this.originals.delete(edit.index);
+      }
+      return {};
+    }
     if (edit.kind !== 'paragraph') throw new Error('Not a paragraph edit');
-    const isCell = edit.index >= CELL_BASE;
+    const isCell = isCellIndex(edit.index) || isNewParaIndex(edit.index);
+    if (isNewParaIndex(edit.index) && !this.newParas.has(edit.index)) throw new Error(`Paragraph ${edit.index} does not exist`);
     const original = this.paragraphs[edit.index];
     if (original === undefined && !isCell) throw new Error(`Paragraph ${edit.index} does not exist`);
     if (!this.originals.has(edit.index)) {
@@ -127,7 +148,16 @@ export class DocxAdapter implements FormatAdapter {
     const doc = parseXml(text(this.entries, 'word/document.xml'));
     const paras = bodyParagraphs(doc);
     const parts = new DocxParts(this.entries, doc);
+    // added paragraphs first (each directly after its anchor), so that tables can follow them too
+    const added = new Map<number, Element>();
+    const elementOf = (i: number) => (isNewParaIndex(i) ? added.get(i) : paras[i]);
+    for (const [index, after] of this.newParas) {
+      const anchor = elementOf(after);
+      const fmt = this.edited.get(index)?.fmt;
+      if (anchor && fmt) added.set(index, newParagraphAfter(parts, anchor, fmt));
+    }
     for (const [index, s] of this.edited) {
+      if (isNewParaIndex(index)) continue; // written above
       const p = paras[index];
       if (!p) continue; // table cells are written below
       if (s.fmt) writeParagraph(parts, p, s.fmt);
@@ -138,7 +168,7 @@ export class DocxAdapter implements FormatAdapter {
       byAnchor.set(t.after, [...(byAnchor.get(t.after) ?? []), t]);
     }
     for (const [after, specs] of byAnchor) {
-      const p = paras[after];
+      const p = elementOf(after);
       if (!p) continue;
       const pfx = p.prefix ? `${p.prefix}:` : '';
       const tables = specs.map((spec) =>
@@ -174,9 +204,11 @@ export class DocxAdapter implements FormatAdapter {
             cursor = j + 1;
             mapped++;
             assigned.set(el, j);
-            const block = edited.get(j)?.fmt?.block;
+            const f = edited.get(j)?.fmt;
             const attrs: Record<string, string> = { 'data-p': String(j) };
-            if (block) attrs['data-block'] = block;
+            if (f?.block) attrs['data-block'] = f.block;
+            if (f?.align) attrs['data-align'] = f.align;
+            if (f?.valign) attrs['data-valign'] = f.valign;
             return attrs;
           }
         }

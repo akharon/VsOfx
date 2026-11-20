@@ -142,6 +142,7 @@ describe('code view', () => {
 
   it('typing in the source is committed on flush', () => {
     document.body.innerHTML = '<div id="root"></div>';
+    localStorage.removeItem('vsofx.mode.markdown'); // the previous test left the editor in source mode
     const root = document.getElementById('root')!;
     const edits: Edit[] = [];
     const tb = createToolbar();

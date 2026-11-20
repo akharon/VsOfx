@@ -1,5 +1,5 @@
 
-# Employee Directory
+Employee Directory
 
 A simple example document demonstrating Markdown syntax.
 
@@ -19,23 +19,23 @@ This file contains employee information and project assignments.
 ## Employee Table
 
 | ID | Name | Department | Salary |
-|----|--------|------------|--------:|
-| 1 | Alice | Engineering | 75,000 |
-| 2 | Bob | QA | 68,000 |
-| 3 | Charlie | Product | 82,000 |
+| --- | --- | --- | ---: |
+| _1_ | _Alice_ | _Engineering_ | _75,000_ |
+| _2_ | _Bob_ | _QA_ | _68,000_ |
+| _3_ | _Charlie_ | _Product_ | _82,000_ |
 
 ---
 
 ## Task List
 
 - [x] Create employee records
-- [x] Create department structure
+- [ ] Create department structure
 - [ ] Add performance reviews
 - [ ] Add payroll integration
 
 ---
 
-## Code Example
+## _Code Example_
 
 ```python
 def calculate_bonus(salary):
@@ -67,6 +67,12 @@ database:
 
 ## Link
 
+| Column 1 | Column 2 |
+| --- | --- |
+| Cell | Cell |
+
+\
+
 Visit the project website:
 
 [Employee Portal](https://example.com)
@@ -79,7 +85,7 @@ Visit the project website:
 
 ---
 
-## Employee JSON Example
+Employee JSON Example
 
 ```json
 {

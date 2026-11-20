@@ -1,17 +1,24 @@
-import type { ApplyResult, Edit, ParagraphEdit, TextModel } from '../../shared/model';
+import type { ApplyResult, Edit, NewParaEdit, ParagraphEdit, TextModel } from '../../shared/model';
 import {
+  H_ALIGNS,
   SAFE_HREF,
+  V_ALIGNS,
   TASK_DONE,
   TASK_OPEN,
+  PARA_BASE,
   cellIndex,
   fmtEquals,
+  isCellIndex,
+  isNewParaIndex,
   normalizeRuns,
   runsText,
   runsToHtml,
   type BlockKind,
+  type HAlign,
   type ParaFmt,
   type Run,
   type TableSpec,
+  type VAlign,
 } from '../../shared/richtext';
 import { createFindBar, domFinder } from '../ui/findBar';
 import { addZoom, createToolbar, type IconName, type Toolbar } from '../ui/toolbar';
@@ -26,13 +33,19 @@ function naturalBlock(el: HTMLElement): BlockKind {
 }
 const blockOf = (el: HTMLElement): BlockKind => (el.dataset['block'] as BlockKind | undefined) ?? naturalBlock(el);
 
+/** Horizontal alignment a paragraph is shown with. */
+function computedAlign(el: HTMLElement): HAlign {
+  const a = el.style.textAlign || (typeof getComputedStyle === 'function' ? getComputedStyle(el).textAlign : '');
+  return a === 'center' ? 'center' : a === 'right' || a === 'end' ? 'right' : a === 'justify' ? 'justify' : 'left';
+}
+
 /** Formatted runs of an editable block (nested lists and tables are not part of it). */
 export function serializeRuns(el: HTMLElement): Run[] {
   const runs: Run[] = [];
   const walk = (node: Node, f: Omit<Run, 't'>) => {
     for (let n = node.firstChild; n; n = n.nextSibling) {
       if (n.nodeType === 3) {
-        runs.push({ t: (n.nodeValue ?? '').replace(/​/g, ''), ...f });
+        runs.push({ t: (n.nodeValue ?? '').replace(/​/g, '').replace(/ /g, ' '), ...f });
         continue;
       }
       if (n.nodeType !== 1) continue;
@@ -110,20 +123,45 @@ export function renderTextView(
   const currentFmt = new Map<number, ParaFmt>(); // rich: last committed formatting
   const blocks = new Map<number, HTMLElement>();
   const tables = new Map<number, { spec: TableSpec; el: HTMLTableElement }>();
+  const anchors = new Map<number, number>();
   let active: HTMLElement | null = null;
   // link editor state (a small bar under the toolbar: window.prompt is not available in webviews)
   let linkRange: Range | null = null;
   let linkInput!: HTMLInputElement;
   let linkTarget: HTMLElement | null = null;
+  // table size bar state
+  let tableBar!: HTMLDivElement;
+  let rowsInput!: HTMLInputElement;
+  let colsInput!: HTMLInputElement;
+  let delTableBtn!: HTMLButtonElement;
+  let tableTarget: HTMLElement | null = null;
 
   const fmtOf = (el: HTMLElement): ParaFmt => {
     const f: ParaFmt = { runs: serializeRuns(el) };
     const b = el.dataset['block'] as BlockKind | undefined;
     if (b) f.block = b;
+    const a = el.dataset['align'] as HAlign | undefined;
+    if (a) f.align = a;
+    const v = (el.dataset['valign'] ?? el.closest<HTMLElement>('td,th')?.dataset['valign']) as VAlign | undefined;
+    if (v) f.valign = v;
     return f;
+  };
+  /** Shows the alignment attributes of a paragraph (the cell takes the vertical one). */
+  const showAlign = (el: HTMLElement, fmt?: ParaFmt) => {
+    if (fmt) {
+      if (fmt.align) el.dataset['align'] = fmt.align;
+      else delete el.dataset['align'];
+      if (fmt.valign) el.dataset['valign'] = fmt.valign;
+      else delete el.dataset['valign'];
+    }
+    const cell = el.closest<HTMLElement>('td,th');
+    const v = el.dataset['valign'];
+    if (cell && v) cell.dataset['valign'] = v;
+    else if (cell && fmt) delete cell.dataset['valign'];
   };
   const register = (el: HTMLElement, index: number) => {
     blocks.set(index, el);
+    showAlign(el);
     if (rich) {
       const f = fmtOf(el);
       currentFmt.set(index, f);
@@ -137,6 +175,12 @@ export function renderTextView(
   for (const el of Array.from(page.querySelectorAll<HTMLElement>('[data-p]'))) register(el, Number(el.dataset['p']));
   if (readonly) page.classList.add('readonly');
   for (const t of model.tables ?? []) createTable(t.table, t.cells);
+  for (const p of model.paras ?? []) createParagraph(p.index, p.after, p.fmt);
+  // tables that the adapter rendered itself (Writer)
+  for (const el of Array.from(page.querySelectorAll<HTMLTableElement>('table.ins-table[data-table]'))) {
+    const n = (k: string) => Number(el.dataset[k]);
+    tables.set(n('table'), { spec: { id: n('table'), after: n('after'), rows: n('rows'), cols: n('cols') }, el });
+  }
 
   // ---- toolbar: find, zoom, navigation pane, formatting marks, word count ----
   const finder = createFindBar(tb.extra, domFinder(page));
@@ -179,8 +223,27 @@ export function renderTextView(
     fmtBtn('Task (☐ → ☑ → none)', 'checkbox', () => toggleTask(active!));
     fmtBtn('Quote', 'quote', () => setBlock(active!, blockOf(active!) === 'quote' ? 'p' : 'quote'));
     fmtBtn('Link (Ctrl+K)', 'link', () => openLinkBar());
-    fmtBtn('Insert table below', 'table', () => insertTable(active!));
+    fmtBtn('Table: insert below the cursor paragraph, choose its size', 'table', () => openTableBar());
+    fmtBtn('Horizontal alignment: left → center → right → justified', 'alignH', () => {
+      const el = active!;
+      const cur = (el.dataset['align'] as HAlign | undefined) ?? computedAlign(el);
+      el.dataset['align'] = H_ALIGNS[(H_ALIGNS.indexOf(cur) + 1) % H_ALIGNS.length]!;
+      commit(el);
+    });
+    const vBtn = fmtBtn('Vertical alignment in a table cell: top → middle → bottom', 'alignV', () => {
+      const el = active!;
+      const cell = el.closest<HTMLElement>('td,th');
+      if (!cell) {
+        vBtn.title = 'Vertical alignment applies to table cells: put the cursor in a cell';
+        return;
+      }
+      const cur = (cell.dataset['valign'] as VAlign | undefined) ?? 'top';
+      el.dataset['valign'] = V_ALIGNS[(V_ALIGNS.indexOf(cur) + 1) % V_ALIGNS.length]!;
+      showAlign(el);
+      commit(el);
+    });
     buildLinkBar();
+    buildTableBar();
   }
   const counter = tb.info();
 
@@ -218,32 +281,36 @@ export function renderTextView(
   refreshStats();
 
   // ---- editing ----
-  const commit = (el: HTMLElement) => {
+  /** The paragraph edit for what the user changed in `el` (and marks it as committed). */
+  const pendingEdit = (el: HTMLElement): ParagraphEdit | null => {
     const index = Number(el.dataset['p']);
     const old = current.get(index) ?? '';
     if (!rich) {
       const text = (el.textContent ?? '').replace(/\n+/g, ' ');
-      if (text === old) return;
+      if (text === old) return null;
       current.set(index, text);
-      refreshStats();
-      onEdit({ kind: 'paragraph', index, text, old });
-      return;
+      return { kind: 'paragraph', index, text, old };
     }
     const oldFmt = currentFmt.get(index) ?? { runs: [] };
     const fmt = fmtOf(el);
-    if (fmtEquals(fmt, oldFmt)) return;
+    if (fmtEquals(fmt, oldFmt)) return null;
     const text = runsText(fmt.runs);
     current.set(index, text);
     currentFmt.set(index, fmt);
+    return { kind: 'paragraph', index, text, old, fmt, oldFmt };
+  };
+  const commit = (el: HTMLElement) => {
+    const e = pendingEdit(el);
+    if (!e) return;
     refreshStats();
-    onEdit({ kind: 'paragraph', index, text, old, fmt, oldFmt });
+    onEdit(e);
   };
   const flush = () => {
     if (active && active.isConnected) commit(active);
   };
 
   function setBlock(el: HTMLElement, kind: BlockKind) {
-    if (el.dataset['p'] && Number(el.dataset['p']) >= 1_000_000) return; // table cells stay paragraphs
+    if (isCellIndex(Number(el.dataset['p']))) return; // table cells stay paragraphs
     el.dataset['block'] = kind;
     commit(el);
   }
@@ -374,7 +441,186 @@ export function renderTextView(
     }
   }
 
+  // ---- added paragraphs (Enter) ----
+  // (anchors: added paragraph -> the paragraph it was added after; declared at the top)
+  /** Element for an added paragraph: a list item next to a list item, else a paragraph. */
+  function createParagraph(index: number, after: number, fmt: ParaFmt): HTMLElement | undefined {
+    const anchor = blocks.get(after) ?? page.querySelector<HTMLElement>(`[data-p="${after}"]`);
+    if (!anchor) return undefined;
+    const el = document.createElement(anchor.tagName.toLowerCase() === 'li' ? 'li' : 'p');
+    el.dataset['p'] = String(index);
+    if (fmt.block) el.dataset['block'] = fmt.block;
+    if (fmt.align) el.dataset['align'] = fmt.align;
+    el.innerHTML = runsToHtml(fmt.runs);
+    anchor.after(el);
+    register(el, index);
+    anchors.set(index, after);
+    return el;
+  }
+  function removeParagraph(index: number) {
+    const el = blocks.get(index);
+    if (!el) return;
+    // paragraphs added after this one now follow its own anchor (the adapters do the same)
+    const own = anchors.get(index);
+    for (const [i, a] of anchors) if (a === index && own !== undefined) anchors.set(i, own);
+    anchors.delete(index);
+    if (active === el) active = null;
+    el.remove();
+    blocks.delete(index);
+    current.delete(index);
+    currentFmt.delete(index);
+  }
+  function caretRange(): Range | null {
+    const sel = window.getSelection();
+    return sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+  }
+  function placeCaret(el: HTMLElement, atEnd: boolean) {
+    el.focus();
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.collapse(!atEnd);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(r);
+  }
+  /** Enter: the text after the cursor moves into a new paragraph below. */
+  function splitParagraph(el: HTMLElement) {
+    const r = caretRange();
+    if (!r || !el.contains(r.startContainer)) return;
+    r.deleteContents();
+    const tail = document.createRange();
+    tail.setStart(r.startContainer, r.startOffset);
+    tail.setEnd(el, el.childNodes.length);
+    const moved = tail.extractContents();
+    const holder = document.createElement('div');
+    holder.appendChild(moved);
+    const kind = blockOf(el);
+    // a heading is followed by normal text; lists and quotes continue
+    const block: BlockKind | undefined = /^h/.test(kind) ? 'p' : kind === 'quote' ? 'quote' : el.dataset['block'] === 'ul' || el.dataset['block'] === 'ol' ? kind : undefined;
+    const fmt: ParaFmt = { runs: serializeRuns(holder) };
+    if (block) fmt.block = block;
+    const ids = [...blocks.keys()].filter(isNewParaIndex);
+    const index = Math.max(PARA_BASE, ...ids) + 1;
+    const after = Number(el.dataset['p']);
+    const first = pendingEdit(el);
+    const created = createParagraph(index, after, fmt);
+    if (!created) return;
+    const add: NewParaEdit = { kind: 'newpara', op: 'insert', index, after, fmt };
+    onEdit(first ? { kind: 'batch', edits: [first, add] } : add);
+    refreshStats();
+    placeCaret(created, false);
+  }
+  /** Backspace in an empty added paragraph removes it again. */
+  function removeEmpty(el: HTMLElement): boolean {
+    const index = Number(el.dataset['p']);
+    if (!isNewParaIndex(index) || (el.textContent ?? '').replace(/​/g, '') !== '') return false;
+    const all = Array.from(page.querySelectorAll<HTMLElement>('[data-p]'));
+    const prev = all[all.indexOf(el) - 1];
+    const after = anchors.get(index);
+    if (after === undefined) return false;
+    const fmt = currentFmt.get(index) ?? { runs: [] };
+    const e: NewParaEdit = { kind: 'newpara', op: 'remove', index, after, fmt };
+    removeParagraph(index);
+    onEdit(e);
+    refreshStats();
+    if (prev) placeCaret(prev, true);
+    return true;
+  }
+  /** Moves the cursor to the previous / next paragraph when it is at the edge of this one. */
+  function moveAcross(el: HTMLElement, ev: KeyboardEvent): boolean {
+    const r = caretRange();
+    if (!r || !r.collapsed) return false;
+    const up = ev.key === 'ArrowUp' || ev.key === 'ArrowLeft';
+    const probe = document.createRange();
+    probe.selectNodeContents(el);
+    if (up) probe.setEnd(r.startContainer, r.startOffset);
+    else probe.setStart(r.startContainer, r.startOffset);
+    const rest = probe.toString();
+    let edge: boolean;
+    if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') edge = rest === '';
+    else {
+      // first / last line: no line break between the cursor and the edge
+      const caret = r.getBoundingClientRect?.();
+      const box = el.getBoundingClientRect();
+      const line = parseFloat(getComputedStyle(el).lineHeight) || 20;
+      edge = rest === '' || !caret || caret.height === 0 || (up ? caret.top - box.top < line * 0.9 : box.bottom - caret.bottom < line * 0.9);
+    }
+    if (!edge) return false;
+    const all = Array.from(page.querySelectorAll<HTMLElement>('[data-p]'));
+    const next = all[all.indexOf(el) + (up ? -1 : 1)];
+    if (!next) return false;
+    placeCaret(next, up);
+    next.scrollIntoView?.({ block: 'nearest' });
+    return true;
+  }
+
   // ---- inserted tables ----
+  function buildTableBar() {
+    tableBar = document.createElement('div');
+    tableBar.className = 'findbar linkbar tablebar';
+    tableBar.hidden = true;
+    const num = (label: string, value: number, max: number) => {
+      const wrap = document.createElement('label');
+      wrap.className = 'tb-field';
+      wrap.textContent = label;
+      const i = document.createElement('input');
+      i.type = 'number';
+      i.min = '1';
+      i.max = String(max);
+      i.value = String(value);
+      i.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key === 'Enter') doInsertTable();
+        else if (ev.key === 'Escape') tableBar.hidden = true;
+      });
+      wrap.appendChild(i);
+      return { wrap, i };
+    };
+    const rows = num('Rows', 3, 99);
+    const cols = num('Columns', 3, 20);
+    rowsInput = rows.i;
+    colsInput = cols.i;
+    const mk = (label: string, fn: () => void) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tb-btn';
+      b.textContent = label;
+      b.addEventListener('mousedown', (ev) => ev.preventDefault());
+      b.addEventListener('click', fn);
+      return b;
+    };
+    const hint = document.createElement('span');
+    hint.className = 'find-status';
+    hint.textContent = 'below the paragraph with the cursor';
+    delTableBtn = mk('Delete this table', () => {
+      const t = [...tables.values()].find((x) => tableTarget && x.el.contains(tableTarget));
+      if (!t) return;
+      removeTable(t.spec.id);
+      onEdit({ kind: 'table', op: 'remove', table: t.spec });
+      tableBar.hidden = true;
+      refreshStats();
+    });
+    tableBar.append(rows.wrap, cols.wrap, mk('Insert', doInsertTable), delTableBtn, mk('Close', () => (tableBar.hidden = true)), hint);
+    tb.extra.appendChild(tableBar);
+  }
+  function openTableBar() {
+    tableTarget = active;
+    delTableBtn.hidden = ![...tables.values()].some((x) => active && x.el.contains(active));
+    tableBar.hidden = false;
+    rowsInput.focus();
+    rowsInput.select();
+  }
+  function doInsertTable() {
+    const rows = Math.round(Number(rowsInput.value));
+    const cols = Math.round(Number(colsInput.value));
+    if (!(rows >= 1 && rows <= 99 && cols >= 1 && cols <= 20 && rows * cols <= 999) || !tableTarget) {
+      rowsInput.setCustomValidity?.('1-99 rows, 1-20 columns');
+      return;
+    }
+    tableBar.hidden = true;
+    insertTable(tableTarget, rows, cols);
+  }
+
   function createTable(spec: TableSpec, cells: string[] = []) {
     const anchor = page.querySelector<HTMLElement>(`[data-p="${spec.after}"]`);
     if (!anchor) return;
@@ -411,16 +657,16 @@ export function renderTextView(
     t.el.remove();
     tables.delete(id);
   }
-  function insertTable(el: HTMLElement) {
+  function insertTable(el: HTMLElement, rows: number, cols: number) {
     let anchorIndex = Number(el.dataset['p']);
-    if (anchorIndex >= 1_000_000) {
+    if (isCellIndex(anchorIndex)) {
       // inside an inserted table: put the new one after the same paragraph
       const host = [...tables.values()].find((t) => t.el.contains(el));
       if (!host) return;
       anchorIndex = host.spec.after;
     }
     const id = Math.max(0, ...tables.keys()) + 1;
-    const spec: TableSpec = { id, after: anchorIndex, rows: 3, cols: 3 };
+    const spec: TableSpec = { id, after: anchorIndex, rows, cols };
     createTable(spec);
     onEdit({ kind: 'table', op: 'insert', table: spec });
     tables.get(id)?.el.querySelector<HTMLElement>('[data-p]')?.focus();
@@ -433,7 +679,12 @@ export function renderTextView(
     const mod = ev.ctrlKey || ev.metaKey;
     if (ev.key === 'Enter' && !ev.shiftKey) {
       ev.preventDefault();
-      el.blur();
+      if (rich && !isCellIndex(Number(el.dataset['p']))) splitParagraph(el);
+      else el.blur();
+    } else if (ev.key === 'Backspace' && rich && !mod && removeEmpty(el)) {
+      ev.preventDefault();
+    } else if (/^Arrow(Up|Down|Left|Right)$/.test(ev.key) && !ev.shiftKey && !mod && !ev.altKey && moveAcross(el, ev)) {
+      ev.preventDefault();
     } else if (ev.key === 'Enter' && ev.shiftKey && !rich) {
       ev.preventDefault();
     } else if (ev.key === 'Escape') {
@@ -490,6 +741,12 @@ export function renderTextView(
         refreshStats();
         return;
       }
+      if (edit.kind === 'newpara') {
+        if (edit.op === 'insert' && !blocks.has(edit.index)) createParagraph(edit.index, edit.after, edit.fmt);
+        else if (edit.op === 'remove') removeParagraph(edit.index);
+        refreshStats();
+        return;
+      }
       if (edit.kind !== 'paragraph') return;
       const el = blocks.get(edit.index);
       if (!el) return;
@@ -513,6 +770,7 @@ export function renderTextView(
       if (!fmtEquals(fmtOf(el), edit.fmt)) el.innerHTML = runsToHtml(edit.fmt.runs);
       if (edit.fmt.block) el.dataset['block'] = edit.fmt.block;
       else delete el.dataset['block'];
+      showAlign(el, edit.fmt);
       currentFmt.set(edit.index, edit.fmt);
     } else el.textContent = edit.text;
     current.set(edit.index, edit.text);

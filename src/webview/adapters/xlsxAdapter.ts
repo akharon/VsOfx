@@ -1,5 +1,5 @@
 import * as ExcelNS from 'exceljs';
-import type { ApplyResult, CellEdit, CellStyle, CellView, Edit, MergeRange, SheetData, SheetModel } from '../../shared/model';
+import type { ApplyResult, CellEdit, CellStyle, CellView, Edit, MergeRange, SheetData, SheetEdit, SheetModel } from '../../shared/model';
 import { MAX_COLS, MAX_ROWS } from '../../shared/model';
 import { Calc, FormulaError, UNSUPPORTED, type Book, type Scalar } from '../../shared/formula';
 import type { FormatAdapter } from './Adapter';
@@ -55,15 +55,44 @@ export class XlsxAdapter implements FormatAdapter {
     // exceljs accepts Buffer/ArrayBuffer; a plain copy keeps it independent of the caller's memory.
     await this.workbook.xlsx.load(normalizeForExcelJs(bytes).slice().buffer as ArrayBuffer);
     for (const e of edits) this.applyEdit(e);
-    return { type: 'sheet', sheets: this.workbook.worksheets.map((ws) => this.sheetData(ws)) };
+    return { type: 'sheet', sheets: this.workbook.worksheets.map((ws) => this.sheetData(ws)), sheetOps: true };
   }
 
   applyEdit(edit: Edit): ApplyResult {
+    if (edit.kind === 'sheet') return this.applySheet(edit);
+    if (edit.kind === 'colwidth') {
+      const ws = this.workbook.worksheets[edit.sheet];
+      if (!ws) throw new Error(`Sheet ${edit.sheet} does not exist`);
+      ws.getColumn(edit.col + 1).width = edit.width ?? (undefined as unknown as number);
+      return {};
+    }
+    if (edit.kind === 'wrap') {
+      const ws = this.workbook.worksheets[edit.sheet];
+      if (!ws) throw new Error(`Sheet ${edit.sheet} does not exist`);
+      const cell = ws.getCell(edit.row + 1, edit.col + 1);
+      const al: Partial<ExcelNS.Alignment> = { ...(cell.alignment ?? {}) };
+      if (edit.wrap) al.wrapText = true;
+      else delete al.wrapText;
+      cell.alignment = al;
+      return { cell: this.cellView(cell) };
+    }
+    if (edit.kind === 'align') {
+      const ws = this.workbook.worksheets[edit.sheet];
+      if (!ws) throw new Error(`Sheet ${edit.sheet} does not exist`);
+      const cell = ws.getCell(edit.row + 1, edit.col + 1);
+      const al: Partial<ExcelNS.Alignment> = { ...(cell.alignment ?? {}) };
+      if (edit.align.h) al.horizontal = edit.align.h;
+      else delete al.horizontal;
+      if (edit.align.v) al.vertical = edit.align.v;
+      else delete al.vertical;
+      cell.alignment = al;
+      return { cell: this.cellView(cell) };
+    }
     if (edit.kind !== 'cell') throw new Error('Not a cell edit');
     const ws = this.workbook.worksheets[edit.sheet];
     if (!ws) throw new Error(`Sheet ${edit.sheet} does not exist`);
     const cell = ws.getCell(edit.row + 1, edit.col + 1);
-    const key = `${edit.sheet}:${edit.row}:${edit.col}`;
+    const key = `${ws.id}:${edit.row}:${edit.col}`;
     let orig = this.originals.get(key);
     if (!orig) {
       orig = { raw: cell.value, input: inputString(cell) };
@@ -77,6 +106,42 @@ export class XlsxAdapter implements FormatAdapter {
     const res: ApplyResult = { cell: this.cellView(cell) };
     if (others.length) res.others = others;
     return res;
+  }
+
+  /** Sheets removed by the user, kept so that undo restores them with their content. */
+  private readonly removed: ExcelNS.Worksheet[] = [];
+
+  private applySheet(edit: SheetEdit): ApplyResult {
+    const wb = this.workbook as unknown as { _worksheets: (ExcelNS.Worksheet | undefined)[]; removeWorksheetEx(ws: ExcelNS.Worksheet): void };
+    const list = this.workbook.worksheets;
+    const reorder = (order: ExcelNS.Worksheet[]) => order.forEach((w, i) => ((w as unknown as { orderNo: number }).orderNo = i + 1));
+    if (edit.op === 'rename') {
+      const ws = list[edit.index];
+      if (!ws) throw new Error(`Sheet ${edit.index} does not exist`);
+      ws.name = edit.name;
+      return {};
+    }
+    if (edit.op === 'remove') {
+      const ws = list[edit.index];
+      if (!ws) throw new Error(`Sheet ${edit.index} does not exist`);
+      if (list.length <= 1) throw new Error('A workbook needs at least one sheet');
+      this.removed.push(ws);
+      wb.removeWorksheetEx(ws);
+      reorder(list.filter((w) => w !== ws));
+      return {};
+    }
+    const at = this.removed.map((w) => w.name).lastIndexOf(edit.name);
+    let ws: ExcelNS.Worksheet;
+    if (at >= 0) {
+      ws = this.removed.splice(at, 1)[0]!;
+      const w = ws as unknown as { id: number };
+      if (wb._worksheets[w.id]) w.id = wb._worksheets.length; // the id was given to a newer sheet
+      wb._worksheets[w.id] = ws;
+    } else ws = this.workbook.addWorksheet(edit.name);
+    const order = this.workbook.worksheets.filter((w) => w !== ws);
+    order.splice(Math.min(edit.index, order.length), 0, ws);
+    reorder(order);
+    return { sheet: this.sheetData(ws) };
   }
 
   /** Recomputes all formulas; returns the cells whose result changed. Unsupported formulas keep their cached result. */
@@ -195,6 +260,10 @@ function styleOf(cell: ExcelNS.Cell): CellStyle | undefined {
   }
   const h = cell.alignment?.horizontal;
   if (h === 'left' || h === 'center' || h === 'right') s.align = h;
+  const v = cell.alignment?.vertical;
+  if (v === 'top' || v === 'bottom') s.valign = v;
+  else if (v === 'middle') s.valign = 'middle';
+  if (cell.alignment?.wrapText) s.wrap = true;
   return Object.keys(s).length ? s : undefined;
 }
 

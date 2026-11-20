@@ -2,7 +2,7 @@
 // word/document.xml. Element order inside w:rPr / w:pPr follows the OOXML schema, because
 // Word refuses files with misordered properties. Styles, numbering definitions and hyperlink
 // relationships that a document does not have yet are added to their parts.
-import { type BlockKind, type ParaFmt, type Run, type TableSpec } from '../../shared/richtext';
+import { type BlockKind, type HAlign, type ParaFmt, type VAlign, type Run, type TableSpec } from '../../shared/richtext';
 import { childrenNS, firstChildNS, parseXml, serializeXml, xmlSafe } from './xml';
 import { optionalText, type ZipEntries } from './zip';
 
@@ -299,6 +299,36 @@ export function writeParagraph(parts: DocxParts, p: Element, fmt: ParaFmt): void
     } else p.appendChild(r);
   }
   if (fmt.block) applyBlock(parts, p, fmt.block);
+  if (fmt.align) applyAlign(parts, p, fmt.align);
+  if (fmt.valign) applyVAlign(parts, p, fmt.valign);
+}
+
+/** Paragraph alignment (w:jc). */
+export function applyAlign(parts: DocxParts, p: Element, align: HAlign): void {
+  const pfx = prefixOf(p);
+  let pPr = firstChildNS(p, W, 'pPr');
+  if (!pPr) {
+    pPr = wEl(parts.doc, pfx, 'pPr');
+    p.insertBefore(pPr, p.firstChild);
+  }
+  removeChildren(pPr, ['jc']);
+  insertOrdered(pPr, wEl(parts.doc, pfx, 'jc', { val: align === 'justify' ? 'both' : align }), PPR_ORDER);
+}
+
+/** Vertical alignment of the table cell the paragraph is in (w:tcPr/w:vAlign); nothing outside tables. */
+export function applyVAlign(parts: DocxParts, p: Element, v: VAlign): void {
+  const tc = p.parentNode as Element | null;
+  if (!tc || tc.namespaceURI !== W || tc.localName !== 'tc') return;
+  const pfx = prefixOf(p);
+  let tcPr = firstChildNS(tc, W, 'tcPr');
+  if (!tcPr) {
+    tcPr = wEl(parts.doc, pfx, 'tcPr');
+    tc.insertBefore(tcPr, tc.firstChild);
+  }
+  removeChildren(tcPr, ['vAlign']);
+  const e = wEl(parts.doc, pfx, 'vAlign', { val: v === 'middle' ? 'center' : v });
+  const hide = firstChildNS(tcPr, W, 'hideMark');
+  tcPr.insertBefore(e, hide ?? null);
 }
 
 export function applyBlock(parts: DocxParts, p: Element, block: BlockKind): void {
@@ -329,6 +359,31 @@ export function applyBlock(parts: DocxParts, p: Element, block: BlockKind): void
   if (!pPr.firstChild) p.removeChild(pPr);
 }
 
+/**
+ * A new paragraph after `anchor` with the anchor's paragraph properties (style, list) and the
+ * character formatting of its first run; then `fmt` is written into it.
+ */
+export function newParagraphAfter(parts: DocxParts, anchor: Element, fmt: ParaFmt): Element {
+  const pfx = prefixOf(anchor);
+  const p = wEl(parts.doc, pfx, 'p');
+  const pPr = firstChildNS(anchor, W, 'pPr');
+  if (pPr) {
+    const clone = pPr.cloneNode(true) as Element;
+    removeChildren(clone, ['sectPr', 'pPrChange']); // the section break stays with the anchor
+    p.appendChild(clone);
+  }
+  const base = baseRunProps(anchor);
+  if (base) {
+    // carrier for the inherited run properties; writeParagraph replaces it
+    const r = wEl(parts.doc, pfx, 'r');
+    r.appendChild(base);
+    p.appendChild(r);
+  }
+  anchor.parentNode!.insertBefore(p, anchor.nextSibling);
+  writeParagraph(parts, p, fmt);
+  return p;
+}
+
 /** A new bordered table; `cell(r, c)` gives the formatted content of each cell. */
 export function buildTable(parts: DocxParts, pfx: string, spec: TableSpec, cell: (r: number, c: number) => ParaFmt | undefined): Element {
   const doc = parts.doc;
@@ -354,9 +409,9 @@ export function buildTable(parts: DocxParts, pfx: string, spec: TableSpec, cell:
       tcPr.appendChild(wEl(doc, pfx, 'tcW', { w: String(width), type: 'dxa' }));
       tc.appendChild(tcPr);
       const p = wEl(doc, pfx, 'p');
+      tc.appendChild(p);
       const f = cell(r, c);
       if (f) writeParagraph(parts, p, r === 0 ? { ...f, runs: f.runs.map((x) => ({ ...x, b: true as const })) } : f);
-      tc.appendChild(p);
       tr.appendChild(tc);
     }
     tbl.appendChild(tr);
