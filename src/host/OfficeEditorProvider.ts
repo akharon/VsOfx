@@ -8,6 +8,12 @@ import { OfficeDocument } from './OfficeDocument';
 import { buildWebviewHtml, makeNonce } from './webviewHtml';
 
 const SAVE_TIMEOUT_MS = 30_000;
+const MAX_MESSAGE_CHARS = 500;
+/** Text from the webview, shortened for notifications and the log. */
+export const clip = (v: unknown): string => {
+  const s = String(v);
+  return s.length > MAX_MESSAGE_CHARS ? `${s.slice(0, MAX_MESSAGE_CHARS)}…` : s;
+};
 /** Only these commands can be triggered from the webview's toolbar. */
 const EDITOR_COMMANDS: Record<EditorCommand, string> = { undo: 'undo', redo: 'redo', save: 'workbench.action.files.save' };
 
@@ -179,16 +185,20 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
       }
       case 'saveError': {
         const p = this.takePending(msg.requestId);
-        if (p) p.reject(new Error(String(msg.message)));
+        if (p) p.reject(new Error(clip(msg.message)));
         break;
       }
       case 'error':
-        this.log.appendLine(`Error in ${document.uri.toString()}: ${String(msg.message)}`);
-        this.errors.push(`webview: ${String(msg.message)}`);
+        {
+        // webview text is untrusted: keep notifications and the log readable whatever it sends
+        const text = clip(msg.message);
+        this.log.appendLine(`Error in ${document.uri.toString()}: ${text}`);
+        this.errors.push(`webview: ${text}`);
         void vscode.window
-          .showErrorMessage(`VsOfx: ${String(msg.message)}`, 'Reopen with Text Editor')
+          .showErrorMessage(`VsOfx: ${text}`, 'Reopen with Text Editor')
           .then((c) => c && this.reopenAsText(document.uri));
         break;
+      }
       case 'reopenAsText':
         this.reopenAsText(document.uri);
         break;
@@ -216,8 +226,8 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
         break;
       }
       case 'securityViolation':
-        this.log.appendLine(`Blocked by CSP: ${String(msg.directive)} ${String(msg.blockedURI)}`);
-        this.violations.push({ directive: String(msg.directive), blockedURI: String(msg.blockedURI) });
+        this.log.appendLine(`Blocked by CSP: ${clip(msg.directive)} ${clip(msg.blockedURI)}`);
+        this.violations.push({ directive: clip(msg.directive), blockedURI: clip(msg.blockedURI) });
         break;
       case 'probeResult':
         this.probeResults.push(msg.results);

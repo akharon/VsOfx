@@ -2,7 +2,7 @@ import { PDFCheckBox, PDFDocument, PDFDropdown, PDFRadioGroup, PDFTextField } fr
 import { describe, expect, it } from 'vitest';
 import { PdfAdapter, assertPdf } from '../src/webview/adapters/pdfAdapter';
 import { inverseEdit, isEdit, type Edit } from '../src/shared/model';
-import { applyOp, emptyPdfState, inverseOp, isPdfOp, reduceOps, type FieldSpec, type PdfOp } from '../src/shared/pdf';
+import { MAX_IMAGE_BASE64, applyOp, emptyPdfState, inverseOp, isPdfOp, reduceOps, type FieldSpec, type PdfOp } from '../src/shared/pdf';
 
 /** A two-page PDF with a text field, checkbox, dropdown and radio group. */
 async function makeForm(): Promise<Uint8Array> {
@@ -181,6 +181,7 @@ describe('PdfAdapter', () => {
     expect(isPdfOp({ op: 'addImage', spec })).toBe(true);
     expect(isPdfOp({ op: 'addImage', spec: { ...spec, data: 'not base64!' } })).toBe(false);
     expect(isPdfOp({ op: 'addImage', spec: { ...spec, mime: 'image/gif' } })).toBe(false);
+    expect(isPdfOp({ op: 'addImage', spec: { ...spec, data: 'A'.repeat(MAX_IMAGE_BASE64 + 4) } })).toBe(false);
     const a = new PdfAdapter();
     await a.load(await makeForm(), []);
     a.applyEdit(edit({ op: 'addImage', spec }));

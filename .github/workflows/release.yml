@@ -1,0 +1,62 @@
+# Push a tag vX.Y.Z on main to release:
+#   git tag v1.3.0 && git push origin v1.3.0
+# Builds and tests, attaches the VSIX to a GitHub Release, and publishes to the VS Code Marketplace
+# and Open VSX when the secrets VSCE_PAT / OVSX_PAT are set (Settings -> Secrets and variables -> Actions).
+# Without the secrets only the GitHub Release is made.
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write # create the GitHub Release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag v$tag does not match package.json version $pkg. Bump package.json first."
+            exit 1
+          fi
+      - run: npm run check
+      - name: Integration tests (real VS Code, headless)
+        run: xvfb-run -a npm run test:integration
+      - run: npm run package
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="${GITHUB_REF_NAME#v}" '
+            $0 ~ "^## " { if (found) exit; if (index($0, v)) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" *.vsix --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+      - name: Publish to the VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        if: env.VSCE_PAT != ''
+        run: npx vsce publish --packagePath *.vsix
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        if: env.OVSX_PAT != ''
+        run: npx --yes ovsx@0.10.5 publish *.vsix -p "$OVSX_PAT"

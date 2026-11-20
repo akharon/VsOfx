@@ -16,7 +16,9 @@ $useNode = $false
 $rest = @($args)
 if ($rest.Count -gt 0 -and $rest[0] -eq '-Node') {
   $useNode = $true
-  $rest = if ($rest.Count -gt 1) { $rest[1..($rest.Count - 1)] } else { @() }
+  # Not "$rest = if (...) {...}": that unrolls a one-element array into a string, which @rest then
+  # splats character by character.
+  $rest = @($rest | Select-Object -Skip 1)
 }
 
 function Test-NodeOk([string]$exe) {

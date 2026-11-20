@@ -139,6 +139,13 @@ function isTextSpec(v: unknown): v is TextSpec {
     (s['color'] === undefined || (typeof s['color'] === 'string' && /^#[0-9a-f]{6}$/i.test(s['color'])));
 }
 
+/**
+ * Largest image accepted, as base64 characters (~9 MB of image data). Each copy of an addImage op
+ * (undo stack, mirrored editors, hot-exit backup) carries the whole image, so the view reduces large
+ * images before inserting them.
+ */
+export const MAX_IMAGE_BASE64 = 12_000_000;
+
 function isImageSpec(v: unknown): v is ImageSpec {
   if (typeof v !== 'object' || v === null) return false;
   const s = v as Record<string, unknown>;
@@ -149,7 +156,7 @@ function isImageSpec(v: unknown): v is ImageSpec {
     rect(s['rect']) &&
     (s['mime'] === 'image/png' || s['mime'] === 'image/jpeg') &&
     typeof d === 'string' &&
-    d.length <= 40_000_000 &&
+    d.length <= MAX_IMAGE_BASE64 &&
     /^[A-Za-z0-9+/=]*$/.test(d)
   );
 }

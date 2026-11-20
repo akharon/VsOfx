@@ -2,6 +2,7 @@ import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import type { ApplyResult, Edit, PdfModel } from '../../shared/model';
 import {
+  MAX_IMAGE_BASE64,
   applyOp,
   stateFromJson,
   type FieldKind,
@@ -16,6 +17,10 @@ import {
 import { createFindBar, domFinder } from '../ui/findBar';
 import { addZoom, icon, type IconName, type Toolbar } from '../ui/toolbar';
 import type { EditHandler, View } from './types';
+
+/** Inserted images larger than this (longest side, pixels / file bytes) are reduced. */
+const MAX_IMAGE_PX = 2400;
+const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 
 /** A form control to draw, from an original widget or a field the user added. */
 interface Widget {
@@ -565,19 +570,38 @@ export function renderPdfView(
       onFatal('The image could not be read.');
       return;
     }
+    // The image travels in every undo step, mirrored editor and hot-exit backup, so keep it small:
+    // other formats, more than MAX_IMAGE_PX on a side or more than MAX_IMAGE_BYTES are re-encoded.
     let data: Blob = blob;
-    if (blob.type !== 'image/png' && blob.type !== 'image/jpeg') {
+    const big = Math.max(bmp.width, bmp.height) > MAX_IMAGE_PX;
+    if ((blob.type !== 'image/png' && blob.type !== 'image/jpeg') || big || blob.size > MAX_IMAGE_BYTES) {
+      const k = Math.min(1, MAX_IMAGE_PX / Math.max(bmp.width, bmp.height));
       const c = document.createElement('canvas');
-      c.width = bmp.width;
-      c.height = bmp.height;
-      c.getContext('2d')!.drawImage(bmp, 0, 0);
-      data = await new Promise<Blob>((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error('convert'))), 'image/png'));
-      mime = 'image/png';
+      c.width = Math.max(1, Math.round(bmp.width * k));
+      c.height = Math.max(1, Math.round(bmp.height * k));
+      const ctx = c.getContext('2d')!;
+      const encode = (type: string, q?: number) =>
+        new Promise<Blob>((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error('convert'))), type, q));
+      ctx.drawImage(bmp, 0, 0, c.width, c.height);
+      // PNG keeps transparency; a photo that is still too large as PNG becomes JPEG on white.
+      data = mime === 'image/jpeg' ? await encode('image/jpeg', 0.88) : await encode('image/png');
+      if (data.size > MAX_IMAGE_BYTES && mime === 'image/png') {
+        ctx.globalCompositeOperation = 'destination-over';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, c.width, c.height);
+        data = await encode('image/jpeg', 0.88);
+        mime = 'image/jpeg';
+      }
+      if (data.size > MAX_IMAGE_BYTES) data = await encode('image/jpeg', 0.7);
     }
     const buf = new Uint8Array(await data.arrayBuffer());
     let bin = '';
     for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
     const b64 = btoa(bin);
+    if (b64.length > MAX_IMAGE_BASE64) {
+      onFatal('The image is too large to insert, even after reducing it.');
+      return;
+    }
     const rec = recs.find((r) => r.index === currentPage) ?? recs[0];
     if (!rec) return;
     const pw = rec.viewport.width / scale();

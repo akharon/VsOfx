@@ -1,0 +1,39 @@
+name: Bug report
+description: Something is shown, edited or saved wrongly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Security problems? Please report them privately instead (see SECURITY.md).
+  - type: dropdown
+    id: format
+    attributes:
+      label: File format
+      options: [.docx, .xlsx, .pptx, .odt, .ods, .odp, .odg, .pdf, .csv / .tsv, .md, other]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      placeholder: Steps to reproduce, and whether the file was saved.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: VS Code and VsOfx versions
+      description: Help → About, and the version in the Extensions view.
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: Sample file
+      description: Attach a small file that shows the problem (remove anything private first).
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Output panel → "VsOfx".
+      render: text

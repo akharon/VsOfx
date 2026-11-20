@@ -15,4 +15,4 @@ const run = (cmd, args) => {
 console.log(`Packaging ${out} (version ${info.version}, commit ${info.label})`);
 run('npm', ['run', 'build']);
 run('npm', ['run', 'notices']);
-run('npx', ['vsce', 'package', info.version, '--no-update-package-json', '--no-git-tag-version', '--no-dependencies', '--allow-missing-repository', '--out', out]);
+run('npx', ['vsce', 'package', info.version, '--no-update-package-json', '--no-git-tag-version', '--no-dependencies', '--out', out]);

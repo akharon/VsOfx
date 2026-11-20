@@ -1,6 +1,7 @@
 // Build identity: the VSIX version and file name are derived from git, so every commit gives a new
 // minor version and every build can be traced to a commit.
-//   version = 0.<commits + (uncommitted changes ? 1 : 0)>.0   (committing the build's changes gives the same number)
+//   release (clean tree, HEAD tagged vX.Y.Z) = X.Y.Z
+//   otherwise version = 0.<commits + (uncommitted changes ? 1 : 0)>.0   (committing the build's changes gives the same number)
 //   commit  = short hash of HEAD, "-dirty" appended if the working tree has uncommitted changes
 // Without any commit (or without git) the version from package.json is kept and the commit is "nocommit".
 import { execFileSync } from 'node:child_process';
@@ -17,6 +18,12 @@ export function getBuildInfo() {
     const hash = git('rev-parse', '--short=8', 'HEAD');
     const count = Number(git('rev-list', '--count', 'HEAD'));
     const dirty = git('status', '--porcelain').length > 0;
+    // A release: HEAD carries a tag vX.Y.Z (the release workflow builds from the tag) -> that version.
+    if (!dirty) {
+      const tags = git('tag', '--points-at', 'HEAD').split('\n');
+      const rel = tags.map((t) => /^v(\d+\.\d+\.\d+)$/.exec(t.trim())?.[1]).find(Boolean);
+      if (rel) return { version: rel, commit: hash, dirty, label: hash, release: true };
+    }
     return { version: `0.${count + (dirty ? 1 : 0)}.0`, commit: hash, dirty, label: dirty ? `${hash}-dirty` : hash };
   } catch {
     try {
