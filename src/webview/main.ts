@@ -7,6 +7,7 @@ import { fromByteArray, toByteArray } from '../shared/base64';
 import type { HostMessage, WebviewMessage } from '../shared/messages';
 import { SAFE_HREF } from '../shared/richtext';
 import type { ApplyResult, DocModel, Edit, SourcePart } from '../shared/model';
+import { onDiagram, setDiagramPoster } from './code/diagrams';
 import type { LoadResult, WorkerRequest, WorkerResponse } from './protocol';
 import { createToolbar } from './ui/toolbar';
 import { renderCodeView } from './views/codeView';
@@ -36,6 +37,7 @@ const pending = new Map<number, { resolve(v: unknown): void; reject(e: Error): v
 function post(msg: WebviewMessage, transfer?: Transferable[]): void {
   vscode.postMessage(msg, transfer);
 }
+setDiagramPoster(post);
 
 // ---- links ---------------------------------------------------------------
 // Links never navigate inside the webview. Ctrl/Cmd+click (or a plain click outside editable text)
@@ -354,6 +356,9 @@ window.addEventListener('message', (ev: MessageEvent<HostMessage>) => {
       break;
     case 'requestSave':
       void onSave(msg.requestId);
+      break;
+    case 'diagram':
+      onDiagram(msg.id, typeof msg.html === 'string' ? msg.html : null);
       break;
     case 'probe':
       window.dispatchEvent(new CustomEvent('vsofx-probe')); // handled by dist/probe.js in test builds only

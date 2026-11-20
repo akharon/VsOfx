@@ -141,3 +141,8 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .page [data-align='justify'] { text-align: justify; }
 /* Markdown table size bar */
 .md-tablebar .tb-field input { width: 4em; }
+/* diagrams drawn by VS Code's Markdown extensions (SelDiA, Mermaid); click toggles the source */
+.md-body pre.has-diagram { background: none; padding: 0; text-align: center; }
+.md-body pre.has-diagram > code { display: none; }
+.md-body pre.has-diagram.show-code > code { display: block; text-align: left; padding: 12px 14px; background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15)); }
+.md-body img.md-diagram { max-width: 100%; cursor: pointer; background: #fff; border-radius: 4px; }

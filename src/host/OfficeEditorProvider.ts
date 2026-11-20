@@ -198,6 +198,18 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
         if (SAFE_HREF.test(href)) void vscode.env.openExternal(vscode.Uri.parse(href, true));
         break;
       }
+      case 'renderDiagram': {
+        // Rendered by VS Code's Markdown engine, so diagram extensions (SelDiA, Mermaid) apply.
+        const lang = String(msg.lang);
+        const source = String(msg.source);
+        const id = Number(msg.id);
+        if (!/^(seldia(-[\w-]+)?|mermaid|plantuml)$/.test(lang) || source.length > 200_000) break;
+        const fence = source.includes('```') ? '~~~~' : '```';
+        void Promise.resolve(vscode.commands.executeCommand<string>('markdown.api.render', `${fence}${lang}\n${source}\n${fence}\n`))
+          .then((html) => (typeof html === 'string' ? html : null), () => null)
+          .then((html) => panel.webview.postMessage({ type: 'diagram', id, html } satisfies HostMessage));
+        break;
+      }
       case 'command': {
         const id = EDITOR_COMMANDS[msg.command as EditorCommand];
         if (id && !this.info.get(panel)?.readonly) void vscode.commands.executeCommand(id);

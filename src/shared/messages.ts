@@ -13,6 +13,7 @@ export type HostMessage =
   | { type: 'init'; format: Format; bytes: string; edits: Edit[]; readonly: boolean }
   | { type: 'apply'; edit: Edit }
   | { type: 'requestSave'; requestId: number }
+  | { type: 'diagram'; id: number; html: string | null }
   | { type: 'probe' }; // only sent in extension test mode
 
 /** webview -> host */
@@ -24,6 +25,7 @@ export type WebviewMessage =
   | { type: 'error'; message: string }
   | { type: 'reopenAsText' }
   | { type: 'openLink'; href: string }
+  | { type: 'renderDiagram'; id: number; lang: string; source: string }
   | { type: 'command'; command: EditorCommand }
   | { type: 'securityViolation'; directive: string; blockedURI: string }
   | { type: 'probeResult'; results: Record<string, string> };
