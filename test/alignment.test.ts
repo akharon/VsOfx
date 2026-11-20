@@ -166,6 +166,8 @@ describe('Markdown: table size, alignment, lists, links', () => {
     again.btn('Alignment').click();
     expect(again.result()).toBe('<p align="right">Some **text**.</p>\n');
     again.btn('Alignment').click();
+    expect(again.result()).toBe('<p align="justify">Some **text**.</p>\n');
+    again.btn('Alignment').click();
     expect(again.result()).toBe('Some **text**.\n');
     again.view.dispose();
     localStorage.removeItem('vsofx.mode.markdown');
