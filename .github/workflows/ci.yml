@@ -16,7 +16,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the VSIX version is derived from the commit count
       - uses: actions/setup-node@v4
@@ -41,7 +41,7 @@ jobs:
     # The author develops on Windows: paths, line endings and the PowerShell helper differ there.
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 24
