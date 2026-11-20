@@ -41,8 +41,21 @@ export function requestDiagram(lang: string, source: string): Promise<string | n
 
 function svgDataUrl(html: string): string | null {
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  const svg = doc.querySelector('svg');
+  // The diagram itself, not a sprite sheet of shared symbols that may come first.
+  const all = Array.from(doc.querySelectorAll('svg')).filter((s) => !s.parentElement?.closest('svg'));
+  const svg =
+    doc.querySelector<SVGSVGElement>('.seldia-diagram-svg > svg') ??
+    all.sort((a, b) => b.outerHTML.length - a.outerHTML.length).find((s) => s.querySelector('g, path, rect, text'));
   if (!svg) return null;
+  // Symbols the diagram <use>s from other SVGs on the page go into the image too.
+  for (const other of all) {
+    if (other === svg) continue;
+    const defs = doc.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    for (const d of Array.from(other.querySelectorAll('symbol, defs > *'))) defs.appendChild(d.cloneNode(true));
+    if (defs.childNodes.length) svg.insertBefore(defs, svg.firstChild);
+  }
+  // CSS a preview stylesheet would have supplied: keep any <style> blocks of the rendering.
+  for (const st of Array.from(doc.querySelectorAll('style'))) if (!svg.contains(st)) svg.insertBefore(st.cloneNode(true), svg.firstChild);
   if (!svg.getAttribute('xmlns')) svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
   const text = new XMLSerializer().serializeToString(svg);
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;

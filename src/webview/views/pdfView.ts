@@ -28,6 +28,7 @@ interface Widget {
   fontSize?: number;
   maxLen?: number;
   added: boolean;
+  style?: { bold?: boolean; italic?: boolean; color?: string };
 }
 
 interface PageRec {
@@ -493,6 +494,8 @@ export function renderPdfView(
         readOnly: false,
         options: s.options ?? [],
         added: true,
+        ...(s.size ? { fontSize: s.size } : {}),
+        style: s,
       });
     }
     return list;
@@ -524,7 +527,10 @@ export function renderPdfView(
         if (w.maxLen) el.maxLength = w.maxLen;
         el.spellcheck = false;
         el.readOnly = ro;
-        el.style.fontSize = `${Math.min(fontPx, 40)}px`;
+        el.style.fontSize = `${w.added && w.fontSize ? fontPx : Math.min(fontPx, 40)}px`;
+        if (w.style?.bold) el.style.fontWeight = 'bold';
+        if (w.style?.italic) el.style.fontStyle = 'italic';
+        if (w.style?.color) el.style.color = w.style.color;
         el.addEventListener('change', () => commitValue(w.name, el.value));
         (el as HTMLElement).addEventListener('keydown', (ev: KeyboardEvent) => {
           if (ev.key === 'Escape') {
@@ -804,6 +810,11 @@ export function renderPdfView(
         ml.checked = spec.multiline === true;
         ml.addEventListener('change', () => setMultiline(spec, ml.checked));
         label('Multi-line', ml);
+        styleControls(spec, (patch) => {
+          const cur = { ...spec, rect: rectOf(id, spec.rect) };
+          emit({ op: 'dropField', spec: cur });
+          emit({ op: 'addField', spec: { ...cur, ...patch } });
+        });
       }
       btn('Apply', () => {
         const nm = name.value.trim();
@@ -825,44 +836,66 @@ export function renderPdfView(
         emit({ op: 'dropText', spec: cur });
         emit({ op: 'addText', spec: { ...cur, ...patch } });
       };
-      const size = document.createElement('input');
-      size.type = 'number';
-      size.min = '4';
-      size.max = '96';
-      size.value = String(text.size);
-      size.addEventListener('change', () => {
-        const n = Number(size.value);
-        if (n >= 4 && n <= 96 && n !== text.size) restyle({ size: n });
-      });
-      const step = (d: number) => restyle({ size: Math.min(96, Math.max(4, text.size + d)) });
-      btn('A−', () => step(-1)).title = 'Smaller text';
-      label('Size', size);
-      btn('A+', () => step(1)).title = 'Larger text';
-      const bold = btn('B', () => restyle({ bold: !text.bold }));
-      bold.title = 'Bold';
-      bold.style.fontWeight = 'bold';
-      bold.classList.toggle('active', text.bold === true);
-      const italic = btn('I', () => restyle({ italic: !text.italic }));
-      italic.title = 'Italic';
-      italic.style.fontStyle = 'italic';
-      italic.classList.toggle('active', text.italic === true);
-      const color = document.createElement('select');
-      color.title = 'Text colour';
-      for (const [n, v] of TEXT_COLORS) {
-        const o = document.createElement('option');
-        o.value = v;
-        o.textContent = n;
-        o.style.color = v;
-        color.appendChild(o);
-      }
-      color.value = text.color ?? '#000000';
-      color.addEventListener('change', () => restyle({ color: color.value }));
-      panel.appendChild(color);
+      styleControls(text, restyle);
     }
     const gap = document.createElement('span');
     gap.className = 'tb-spacer';
     panel.appendChild(gap);
     btn('Delete', () => deleteSelected(), 'danger', 'trash');
+  }
+
+  /** Size, bold, italic and colour controls in the panel; `restyle` replaces the item (undoable). */
+  function styleControls(
+    cur: { size?: number; bold?: boolean; italic?: boolean; color?: string },
+    restyle: (patch: { size?: number; bold?: boolean; italic?: boolean; color?: string }) => void,
+  ): void {
+    const now = cur.size ?? 12;
+    const mk = (t: string, title: string, fn: () => void) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tb-btn';
+      b.textContent = t;
+      b.title = title;
+      b.addEventListener('click', fn);
+      panel.appendChild(b);
+      return b;
+    };
+    const set = (n: number) => {
+      const v = Math.min(96, Math.max(4, Math.round(n)));
+      if (v !== cur.size) restyle({ size: v });
+    };
+    mk('A−', 'Smaller text', () => set(now - 1));
+    const size = document.createElement('input');
+    size.type = 'number';
+    size.min = '4';
+    size.max = '96';
+    size.value = String(now);
+    size.title = 'Text size';
+    size.className = 'pdf-size';
+    size.addEventListener('change', () => {
+      const n = Number(size.value);
+      if (n >= 4 && n <= 96) set(n);
+    });
+    panel.appendChild(size);
+    mk('A+', 'Larger text', () => set(now + 1));
+    const bold = mk('B', 'Bold', () => restyle({ bold: !cur.bold }));
+    bold.style.fontWeight = 'bold';
+    bold.classList.toggle('active', cur.bold === true);
+    const italic = mk('I', 'Italic', () => restyle({ italic: !cur.italic }));
+    italic.style.fontStyle = 'italic';
+    italic.classList.toggle('active', cur.italic === true);
+    const color = document.createElement('select');
+    color.title = 'Text colour';
+    for (const [n, v] of TEXT_COLORS) {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = n;
+      o.style.color = v;
+      color.appendChild(o);
+    }
+    color.value = cur.color ?? '#000000';
+    color.addEventListener('change', () => restyle({ color: color.value }));
+    panel.appendChild(color);
   }
 
   /** Switches an added text field between one line and several (replaces it, so undo restores it). */

@@ -76,7 +76,7 @@ export class PdfAdapter implements FormatAdapter {
     };
 
     // 1. new fields
-    for (const spec of s.added.values()) this.addField(doc, spec, s.rects.get(spec.id) ?? spec.rect, page(spec.page));
+    for (const spec of s.added.values()) await this.addField(doc, spec, s.rects.get(spec.id) ?? spec.rect, page(spec.page));
 
     // 2. original widgets: move/resize and remove
     const wanted = new Map<number, Rect>();
@@ -180,14 +180,22 @@ export class PdfAdapter implements FormatAdapter {
     return doc.save();
   }
 
-  private addField(doc: PDFDocument, spec: FieldSpec, r: Rect, page: ReturnType<PDFDocument['getPage']>): void {
+  private async addField(doc: PDFDocument, spec: FieldSpec, r: Rect, page: ReturnType<PDFDocument['getPage']>): Promise<void> {
     const form = doc.getForm();
     const opts = { ...box(r), borderWidth: 1 };
     switch (spec.kind) {
       case 'text': {
         const f = form.createTextField(spec.name);
         if (spec.multiline) f.enableMultiline();
-        f.addToPage(page, opts);
+        const name =
+          spec.bold && spec.italic ? StandardFonts.HelveticaBoldOblique : spec.bold ? StandardFonts.HelveticaBold : spec.italic ? StandardFonts.HelveticaOblique : StandardFonts.Helvetica;
+        const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(spec.color ?? '');
+        f.addToPage(page, {
+          ...opts,
+          font: await doc.embedFont(name),
+          ...(hex ? { textColor: rgb(parseInt(hex[1]!, 16) / 255, parseInt(hex[2]!, 16) / 255, parseInt(hex[3]!, 16) / 255) } : {}),
+        });
+        if (spec.size) f.setFontSize(spec.size);
         break;
       }
       case 'checkbox':

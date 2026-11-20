@@ -18,7 +18,14 @@ export interface FieldSpec {
   rect: Rect;
   options?: string[]; // dropdown
   multiline?: boolean; // text
+  size?: number; // text: font size (unset = automatic)
+  bold?: boolean;
+  italic?: boolean;
+  color?: string; // "#rrggbb"
 }
+
+const optBool = (v: unknown) => v === undefined || typeof v === 'boolean';
+const optColor = (v: unknown) => v === undefined || (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v));
 
 /** Free text placed on a page (printed into the page content on save). */
 export interface TextSpec {
@@ -100,7 +107,11 @@ function isFieldSpec(v: unknown): v is FieldSpec {
     int(s['page']) &&
     rect(s['rect']) &&
     (s['options'] === undefined || (Array.isArray(s['options']) && s['options'].every(str))) &&
-    (s['multiline'] === undefined || typeof s['multiline'] === 'boolean')
+    (s['multiline'] === undefined || typeof s['multiline'] === 'boolean') &&
+    (s['size'] === undefined || (num(s['size']) && (s['size'] as number) > 0 && (s['size'] as number) <= 200)) &&
+    optBool(s['bold']) &&
+    optBool(s['italic']) &&
+    optColor(s['color'])
   );
 }
 
