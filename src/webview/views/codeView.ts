@@ -119,7 +119,7 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
     });
     fmt('Bulleted list', 'listBullet', () => toggleList('UL'), (s) => togglePrefix(s, '- ', /^\s*[-*+]\s+(\[[ xX]\]\s+)?/));
     fmt('Numbered list', 'listNumber', () => toggleList('OL'), (s) => togglePrefix(s, (i) => `${i + 1}. `, /^\s*\d+[.)]\s+/));
-    fmt('Task list', 'checkbox', toggleTask, (s) => togglePrefix(s, '- [ ] ', /^\s*[-*+]\s+\[[ xX]\]\s+/));
+    fmt('Task list (☐ → ☑ → none; click a box to tick it)', 'checkbox', toggleTask, (s) => togglePrefix(s, '- [ ] ', /^\s*[-*+]\s+\[[ xX]\]\s+/));
     fmt('Quote', 'quote', toggleQuote, (s) => togglePrefix(s, '> ', /^>\s?/));
     fmt('Link (Ctrl+K)', 'link', openLinkBar, (s) => {
       const label = s.text.slice(s.start, s.end) || 'link';
@@ -129,7 +129,7 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
     }, false);
     const tableBtn = tb.button('', 'Table: choose its size, inserted at the cursor', () => openTableBar(), 'table');
     tableBtn.addEventListener('mousedown', (ev) => ev.preventDefault());
-    alignHBtn = tb.button('', 'Alignment of the paragraph or table column with the cursor: left → center → right', () => alignColumn(), 'alignH');
+    alignHBtn = tb.button('', 'Alignment of the paragraph or table column with the cursor: left → center → right (→ justified for paragraphs)', () => alignColumn(), 'alignH');
     alignHBtn.addEventListener('mousedown', (ev) => ev.preventDefault());
     buildTableBar();
   }
@@ -303,8 +303,14 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
       li = currentElement()?.closest('li');
     }
     if (!li) return;
-    const box = li.querySelector(':scope > input.task, :scope > p > input.task');
-    if (box) {
+    const box = li.querySelector<HTMLInputElement>(':scope > input.task, :scope > p > input.task');
+    if (box && !box.checked) {
+      // second press ticks the box (as in Word documents); the third one removes it
+      box.checked = true;
+      box.setAttribute('checked', '');
+    } else if (box) {
+      const space = box.nextSibling;
+      if (space?.nodeType === 3 && space.nodeValue?.startsWith(' ')) space.nodeValue = space.nodeValue.slice(1);
       box.remove();
       li.classList.remove('task-item');
     } else {
@@ -394,6 +400,14 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
     if (mode === 'visual') {
       const th = heads.map((h) => `<th>${h}</th>`).join('');
       const tr = `<tr>${'<td><br></td>'.repeat(cols)}</tr>`.repeat(rows);
+      // inside a code block the browser would flatten the table into code text: put it after the block
+      const pre = currentElement()?.closest('pre');
+      if (pre) {
+        const p = document.createElement('p');
+        p.appendChild(document.createElement('br'));
+        pre.after(p);
+        placeCaretIn(p);
+      }
       exec('insertHTML', `<table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table><p><br></p>`);
       return;
     }
@@ -416,7 +430,9 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
    * stores it per column) or of the paragraph (written as `<p align="…">text</p>`).
    */
   function alignColumn(): void {
+    // table columns: left → center → right; paragraphs also get justified (both sides)
     const cycle = (cur: string) => (cur === 'center' ? 'right' : cur === 'right' ? 'left' : 'center');
+    const cycleP = (cur: string) => (cur === 'center' ? 'right' : cur === 'right' ? 'justify' : cur === 'justify' ? 'left' : 'center');
     if (mode !== 'visual') {
       transformSelection((s) => {
         const lines = s.text.split('\n');
@@ -442,7 +458,7 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
         }
         if (!line.trim()) return s;
         const m = /^<p align="(\w+)">(.*)<\/p>\s*$/.exec(line);
-        const next = cycle(m?.[1] ?? 'left');
+        const next = cycleP(m?.[1] ?? 'left');
         const inner = m ? m[2]! : line;
         lines[li] = next === 'left' ? inner : `<p align="${next}">${inner}</p>`;
         const at = pos + lines[li]!.length;
@@ -476,7 +492,7 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
       while (p.firstChild) target.appendChild(p.firstChild);
       p.replaceWith(target);
     }
-    const next = cycle(target.style.textAlign || 'left');
+    const next = cycleP(target.style.textAlign || 'left');
     target.style.textAlign = next === 'left' ? '' : next;
     if (!target.getAttribute('style')) target.removeAttribute('style');
     placeCaretIn(target);
@@ -659,11 +675,13 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
       return;
     }
     if (t instanceof HTMLInputElement && t.classList.contains('task')) {
-      ev.preventDefault();
-      if (readonly) return;
-      if (t.hasAttribute('checked')) t.removeAttribute('checked');
-      else t.setAttribute('checked', '');
-      t.checked = t.hasAttribute('checked');
+      // The browser has already toggled the box. Cancelling the click makes Chromium restore the old
+      // state after this handler, so the box could never be ticked: keep the toggle and mirror it.
+      if (readonly) {
+        ev.preventDefault();
+        return;
+      }
+      t.toggleAttribute('checked', t.checked);
       syncVisual();
     }
   });

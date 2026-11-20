@@ -5,6 +5,7 @@ import workerBase64 from 'virtual:worker-bytes';
 import pdfWorkerBase64 from 'virtual:pdf-worker-bytes';
 import { fromByteArray, toByteArray } from '../shared/base64';
 import type { HostMessage, WebviewMessage } from '../shared/messages';
+import { SAFE_HREF } from '../shared/richtext';
 import type { ApplyResult, DocModel, Edit, SourcePart } from '../shared/model';
 import type { LoadResult, WorkerRequest, WorkerResponse } from './protocol';
 import { createToolbar } from './ui/toolbar';
@@ -35,6 +36,33 @@ const pending = new Map<number, { resolve(v: unknown): void; reject(e: Error): v
 function post(msg: WebviewMessage, transfer?: Transferable[]): void {
   vscode.postMessage(msg, transfer);
 }
+
+// ---- links ---------------------------------------------------------------
+// Links never navigate inside the webview. Ctrl/Cmd+click (or a plain click outside editable text)
+// asks the host to open web and mail links in the browser / mail client.
+function linkHref(a: Element): string {
+  const href = a.getAttribute('data-href') ?? a.getAttribute('href') ?? '';
+  return SAFE_HREF.test(href) ? href : '';
+}
+document.addEventListener(
+  'click',
+  (ev) => {
+    const a = (ev.target as Element | null)?.closest?.('a');
+    const href = a ? linkHref(a) : '';
+    if (!a || !href) return;
+    ev.preventDefault();
+    if (!(a as HTMLElement).isContentEditable || ev.ctrlKey || ev.metaKey) {
+      ev.stopPropagation();
+      post({ type: 'openLink', href });
+    }
+  },
+  true,
+);
+document.addEventListener('mouseover', (ev) => {
+  const a = (ev.target as Element | null)?.closest?.('a') as HTMLElement | null;
+  const href = a ? linkHref(a) : '';
+  if (a && href) a.title = a.isContentEditable ? `${href}\nCtrl+click to open` : href;
+});
 
 // ---- worker --------------------------------------------------------------
 

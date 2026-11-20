@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import type { EditorCommand, HostMessage, WebviewMessage } from '../shared/messages';
 import { fromByteArray, toByteArray } from '../shared/base64';
 import { pdfEditLabel } from '../shared/pdf';
+import { SAFE_HREF } from '../shared/richtext';
 import { formatFromPath, isEdit, type Edit, type Format } from '../shared/model';
 import { OfficeDocument } from './OfficeDocument';
 import { buildWebviewHtml, makeNonce } from './webviewHtml';
@@ -191,6 +192,12 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
       case 'reopenAsText':
         this.reopenAsText(document.uri);
         break;
+      case 'openLink': {
+        // only web and mail links: never file:, command: or other schemes
+        const href = String(msg.href);
+        if (SAFE_HREF.test(href)) void vscode.env.openExternal(vscode.Uri.parse(href, true));
+        break;
+      }
       case 'command': {
         const id = EDITOR_COMMANDS[msg.command as EditorCommand];
         if (id && !this.info.get(panel)?.readonly) void vscode.commands.executeCommand(id);

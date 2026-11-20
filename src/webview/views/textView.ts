@@ -701,8 +701,38 @@ export function renderTextView(
       finder.open();
     }
   };
+  // tickboxes: a click on ☐ / ☑ (or Word's ☒) toggles it, like a form checkbox
+  const BOX_NEXT: Record<string, string> = { [TASK_OPEN]: TASK_DONE, [TASK_DONE]: TASK_OPEN, '☒': TASK_OPEN };
+  const onClick = (ev: MouseEvent) => {
+    const el = (ev.target as HTMLElement).closest<HTMLElement>('[data-p]');
+    if (!el || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    const pos = document.caretRangeFromPoint?.(ev.clientX, ev.clientY);
+    const node = pos?.startContainer;
+    if (!pos || !node || node.nodeType !== 3 || !el.contains(node)) return;
+    const s = node.nodeValue ?? '';
+    // the caret lands before or after the glyph depending on which half was clicked
+    for (const i of [pos.startOffset, pos.startOffset - 1]) {
+      const next = BOX_NEXT[s[i] ?? ''];
+      if (!next) continue;
+      const r = document.createRange();
+      r.setStart(node, i);
+      r.setEnd(node, i + 1);
+      const box = r.getBoundingClientRect();
+      if (ev.clientX < box.left - 2 || ev.clientX > box.right + 2 || ev.clientY < box.top - 2 || ev.clientY > box.bottom + 2) continue;
+      ev.preventDefault();
+      node.nodeValue = s.slice(0, i) + next + s.slice(i + 1);
+      const sel = window.getSelection();
+      const after = document.createRange();
+      after.setStart(node, i + 1);
+      sel?.removeAllRanges();
+      sel?.addRange(after);
+      commit(el);
+      return;
+    }
+  };
   document.addEventListener('keydown', onCapture, true);
   if (!readonly) {
+    page.addEventListener('click', onClick);
     page.addEventListener('keydown', onKeyDown);
     page.addEventListener('focusin', onFocusIn);
     page.addEventListener('focusout', onFocusOut);
@@ -734,6 +764,7 @@ export function renderTextView(
     dispose() {
       finder.close();
       document.removeEventListener('keydown', onCapture, true);
+      page.removeEventListener('click', onClick);
       page.removeEventListener('keydown', onKeyDown);
       page.removeEventListener('focusin', onFocusIn);
       page.removeEventListener('focusout', onFocusOut);

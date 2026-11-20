@@ -23,6 +23,7 @@ export type WebviewMessage =
   | { type: 'saveError'; requestId: number; message: string }
   | { type: 'error'; message: string }
   | { type: 'reopenAsText' }
+  | { type: 'openLink'; href: string }
   | { type: 'command'; command: EditorCommand }
   | { type: 'securityViolation'; directive: string; blockedURI: string }
   | { type: 'probeResult'; results: Record<string, string> };

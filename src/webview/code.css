@@ -83,6 +83,7 @@
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
 }
 .page a[data-href] { color: var(--vscode-textLink-foreground); text-decoration: underline; cursor: text; }
+.page a[data-href]:not([contenteditable] *), .page.readonly a[data-href] { cursor: pointer; }
 .page table.ins-table { border-collapse: collapse; margin: 0.5em 0 1em; min-width: 50%; }
 .page table.ins-table td { border: 1px solid var(--tb-border); padding: 4px 8px; min-width: 6em; vertical-align: top; }
 .page table.ins-table tr:first-child td { font-weight: 600; background: color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-foreground)); }
