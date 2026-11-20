@@ -32,7 +32,7 @@ jobs:
           npm run build
           docker run --rm --network none -v "$PWD":/w -w /w node:24 npx vitest run
       - run: npm run package
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vsix
           path: "*.vsix"
