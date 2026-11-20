@@ -132,7 +132,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 
 /* empty lines can be clicked and typed into */
 .page [data-p].editable:empty { min-height: 1.2em; }
-.page p[data-p].editable:empty::before { content: 'b'; }
+.page p[data-p].editable:empty::before { content: '\200b'; }
 
 /* ---- alignment set in the editor (Word, Writer) ---- */
 .page [data-align='left'] { text-align: left; }
