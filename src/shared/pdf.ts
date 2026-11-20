@@ -27,6 +27,9 @@ export interface TextSpec {
   rect: Rect; // x1,y1 = lower-left corner
   text: string;
   size: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string; // "#rrggbb"
 }
 
 export type FieldValue = string | boolean;
@@ -104,7 +107,10 @@ function isFieldSpec(v: unknown): v is FieldSpec {
 function isTextSpec(v: unknown): v is TextSpec {
   if (typeof v !== 'object' || v === null) return false;
   const s = v as Record<string, unknown>;
-  return str(s['id']) && int(s['page']) && rect(s['rect']) && str(s['text']) && num(s['size']) && (s['size'] as number) > 0;
+  return str(s['id']) && int(s['page']) && rect(s['rect']) && str(s['text']) && num(s['size']) && (s['size'] as number) > 0 &&
+    (s['bold'] === undefined || typeof s['bold'] === 'boolean') &&
+    (s['italic'] === undefined || typeof s['italic'] === 'boolean') &&
+    (s['color'] === undefined || (typeof s['color'] === 'string' && /^#[0-9a-f]{6}$/i.test(s['color'])));
 }
 
 export function isPdfOp(x: unknown): x is PdfOp {

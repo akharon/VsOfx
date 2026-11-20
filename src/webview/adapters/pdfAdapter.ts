@@ -138,9 +138,19 @@ export class PdfAdapter implements FormatAdapter {
 
     // 4. free text
     if (s.texts.size > 0) {
-      const font = await doc.embedFont(StandardFonts.Helvetica);
-      const known = new Set(font.getCharacterSet());
+      const fonts = new Map<string, Awaited<ReturnType<PDFDocument['embedFont']>>>();
+      const fontFor = async (t: { bold?: boolean; italic?: boolean }) => {
+        const name =
+          t.bold && t.italic ? StandardFonts.HelveticaBoldOblique : t.bold ? StandardFonts.HelveticaBold : t.italic ? StandardFonts.HelveticaOblique : StandardFonts.Helvetica;
+        let f = fonts.get(name);
+        if (!f) fonts.set(name, (f = await doc.embedFont(name)));
+        return f;
+      };
       for (const t of s.texts.values()) {
+        const font = await fontFor(t);
+        const known = new Set(font.getCharacterSet());
+        const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(t.color ?? '');
+        const color = hex ? rgb(parseInt(hex[1]!, 16) / 255, parseInt(hex[2]!, 16) / 255, parseInt(hex[3]!, 16) / 255) : rgb(0, 0, 0);
         const r = box(s.rects.get(t.id) ?? t.rect);
         const text = [...t.text].map((c) => (known.has(c.codePointAt(0)!) || c === '\n' ? c : '?')).join('');
         // From the top of the box, wrapped at its width: the same layout the editor shows.
@@ -150,7 +160,7 @@ export class PdfAdapter implements FormatAdapter {
           y: r.y + r.height - ascent,
           size: t.size,
           font,
-          color: rgb(0, 0, 0),
+          color,
           lineHeight: t.size * 1.2,
           maxWidth: Math.max(r.width, t.size),
           wordBreaks: [' ', '-'],

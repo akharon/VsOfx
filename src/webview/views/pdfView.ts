@@ -47,6 +47,16 @@ interface PageRec {
 
 type Placing = 'text' | 'checkbox' | 'dropdown' | 'freetext' | null;
 
+const TEXT_COLORS: [string, string][] = [
+  ['Black', '#000000'],
+  ['Grey', '#808080'],
+  ['Red', '#d32f2f'],
+  ['Orange', '#ef6c00'],
+  ['Green', '#2e7d32'],
+  ['Blue', '#1565c0'],
+  ['Purple', '#6a1b9a'],
+];
+
 const SIZES: Record<Exclude<Placing, null>, [number, number]> = {
   text: [180, 40],
   checkbox: [16, 16],
@@ -609,6 +619,9 @@ export function renderPdfView(
     el.className = 'pdf-ftext';
     el.textContent = t.text;
     el.style.fontSize = `${t.size * scale()}px`;
+    if (t.bold) el.style.fontWeight = 'bold';
+    if (t.italic) el.style.fontStyle = 'italic';
+    if (t.color) el.style.color = t.color;
     if (!readonly) {
       el.contentEditable = 'plaintext-only';
       el.spellcheck = false;
@@ -806,19 +819,45 @@ export function renderPdfView(
       s.textContent = orig.name;
       panel.appendChild(s);
     } else if (text) {
+      // Each change replaces the text box (drop + add), so undo restores the previous look.
+      const restyle = (patch: Partial<TextSpec>) => {
+        const cur = { ...text, text: state.texts.get(id)?.text ?? text.text, rect: rectOf(id, text.rect) };
+        emit({ op: 'dropText', spec: cur });
+        emit({ op: 'addText', spec: { ...cur, ...patch } });
+      };
       const size = document.createElement('input');
       size.type = 'number';
       size.min = '4';
       size.max = '96';
       size.value = String(text.size);
-      label('Size', size);
-      btn('Apply', () => {
+      size.addEventListener('change', () => {
         const n = Number(size.value);
-        if (n >= 4 && n <= 96 && n !== text.size) {
-          emit({ op: 'dropText', spec: { ...text, rect: rectOf(id, text.rect) } });
-          emit({ op: 'addText', spec: { ...text, rect: rectOf(id, text.rect), size: n } });
-        }
+        if (n >= 4 && n <= 96 && n !== text.size) restyle({ size: n });
       });
+      const step = (d: number) => restyle({ size: Math.min(96, Math.max(4, text.size + d)) });
+      btn('A−', () => step(-1)).title = 'Smaller text';
+      label('Size', size);
+      btn('A+', () => step(1)).title = 'Larger text';
+      const bold = btn('B', () => restyle({ bold: !text.bold }));
+      bold.title = 'Bold';
+      bold.style.fontWeight = 'bold';
+      bold.classList.toggle('active', text.bold === true);
+      const italic = btn('I', () => restyle({ italic: !text.italic }));
+      italic.title = 'Italic';
+      italic.style.fontStyle = 'italic';
+      italic.classList.toggle('active', text.italic === true);
+      const color = document.createElement('select');
+      color.title = 'Text colour';
+      for (const [n, v] of TEXT_COLORS) {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = n;
+        o.style.color = v;
+        color.appendChild(o);
+      }
+      color.value = text.color ?? '#000000';
+      color.addEventListener('change', () => restyle({ color: color.value }));
+      panel.appendChild(color);
     }
     const gap = document.createElement('span');
     gap.className = 'tb-spacer';
