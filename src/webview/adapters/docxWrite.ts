@@ -2,7 +2,7 @@
 // word/document.xml. Element order inside w:rPr / w:pPr follows the OOXML schema, because
 // Word refuses files with misordered properties. Styles, numbering definitions and hyperlink
 // relationships that a document does not have yet are added to their parts.
-import { type BlockKind, type HAlign, type ParaFmt, type VAlign, type Run, type TableSpec } from '../../shared/richtext';
+import { type BlockKind, type HAlign, type ParaFmt, type Run, type TableSpec } from '../../shared/richtext';
 import { childrenNS, firstChildNS, parseXml, serializeXml, xmlSafe } from './xml';
 import { optionalText, type ZipEntries } from './zip';
 
@@ -300,7 +300,6 @@ export function writeParagraph(parts: DocxParts, p: Element, fmt: ParaFmt): void
   }
   if (fmt.block) applyBlock(parts, p, fmt.block);
   if (fmt.align) applyAlign(parts, p, fmt.align);
-  if (fmt.valign) applyVAlign(parts, p, fmt.valign);
 }
 
 /** Paragraph alignment (w:jc). */
@@ -315,21 +314,6 @@ export function applyAlign(parts: DocxParts, p: Element, align: HAlign): void {
   insertOrdered(pPr, wEl(parts.doc, pfx, 'jc', { val: align === 'justify' ? 'both' : align }), PPR_ORDER);
 }
 
-/** Vertical alignment of the table cell the paragraph is in (w:tcPr/w:vAlign); nothing outside tables. */
-export function applyVAlign(parts: DocxParts, p: Element, v: VAlign): void {
-  const tc = p.parentNode as Element | null;
-  if (!tc || tc.namespaceURI !== W || tc.localName !== 'tc') return;
-  const pfx = prefixOf(p);
-  let tcPr = firstChildNS(tc, W, 'tcPr');
-  if (!tcPr) {
-    tcPr = wEl(parts.doc, pfx, 'tcPr');
-    tc.insertBefore(tcPr, tc.firstChild);
-  }
-  removeChildren(tcPr, ['vAlign']);
-  const e = wEl(parts.doc, pfx, 'vAlign', { val: v === 'middle' ? 'center' : v });
-  const hide = firstChildNS(tcPr, W, 'hideMark');
-  tcPr.insertBefore(e, hide ?? null);
-}
 
 export function applyBlock(parts: DocxParts, p: Element, block: BlockKind): void {
   const pfx = prefixOf(p);

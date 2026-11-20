@@ -118,13 +118,12 @@ export interface WrapEdit {
   old: boolean;
 }
 
-/** Cell alignment; a missing side is the default (left / bottom in most programs). */
+/** Horizontal cell alignment; missing = the default (text left, numbers right). */
 export interface CellAlign {
   h?: 'left' | 'center' | 'right';
-  v?: 'top' | 'middle' | 'bottom';
 }
 
-/** Spreadsheets: horizontal and vertical alignment of a cell. */
+/** Spreadsheets: horizontal alignment of a cell. */
 export interface AlignEdit {
   kind: 'align';
   sheet: number;
@@ -138,9 +137,8 @@ const isCellAlign = (x: unknown): x is CellAlign => {
   if (typeof x !== 'object' || x === null) return false;
   const a = x as Record<string, unknown>;
   return (
-    Object.keys(a).every((k) => k === 'h' || k === 'v') &&
-    (a['h'] === undefined || a['h'] === 'left' || a['h'] === 'center' || a['h'] === 'right') &&
-    (a['v'] === undefined || a['v'] === 'top' || a['v'] === 'middle' || a['v'] === 'bottom')
+    Object.keys(a).every((k) => k === 'h') &&
+    (a['h'] === undefined || a['h'] === 'left' || a['h'] === 'center' || a['h'] === 'right')
   );
 };
 
@@ -230,7 +228,6 @@ export interface CellStyle {
   color?: string; // CSS color
   fill?: string; // CSS color
   align?: 'left' | 'center' | 'right';
-  valign?: 'top' | 'middle' | 'bottom';
   wrap?: boolean;
 }
 

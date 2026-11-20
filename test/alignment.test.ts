@@ -16,11 +16,11 @@ const docXml = (b: Uint8Array) => strFromU8(readZip(b)['word/document.xml']!);
 
 describe('alignment edits', () => {
   it('are validated and inverted', () => {
-    const e: Edit = { kind: 'align', sheet: 0, row: 1, col: 2, align: { h: 'center', v: 'top' }, old: {} };
+    const e: Edit = { kind: 'align', sheet: 0, row: 1, col: 2, align: { h: 'center' }, old: {} };
     expect(isEdit(e)).toBe(true);
     expect(inverseEdit(inverseEdit(e))).toEqual(e);
-    expect(isEdit({ ...e, align: { h: 'middle' } })).toBe(false);
-    expect(isEdit({ kind: 'paragraph', index: 0, text: 'a', old: 'a', fmt: fmt('a', { align: 'justify', valign: 'middle' }) })).toBe(true);
+    expect(isEdit({ ...e, align: { h: 'middle' as 'left' } })).toBe(false);
+    expect(isEdit({ kind: 'paragraph', index: 0, text: 'a', old: 'a', fmt: fmt('a', { align: 'justify' }) })).toBe(true);
     expect(isEdit({ kind: 'paragraph', index: 0, text: 'a', old: 'a', fmt: { runs: [], align: 'up' } })).toBe(false);
   });
 });
@@ -30,54 +30,47 @@ describe('spreadsheets: alignment', () => {
     ['xlsx', () => makeXlsx('simple')],
     ['ods', () => makeOds()],
   ] as const) {
-    it(`${format}: saves horizontal and vertical alignment with wrap; undo restores`, async () => {
+    it(`${format}: saves alignment together with wrap; undo restores`, async () => {
       const a = createAdapter(format);
       await a.load(await bytes(), []);
-      const al: Edit = { kind: 'align', sheet: 0, row: 0, col: 0, align: { h: 'center', v: 'middle' }, old: {} };
-      expect(a.applyEdit(al).cell?.style).toMatchObject({ align: 'center', valign: 'middle' });
+      const al: Edit = { kind: 'align', sheet: 0, row: 0, col: 0, align: { h: 'center' }, old: {} };
+      expect(a.applyEdit(al).cell?.style).toMatchObject({ align: 'center' });
       a.applyEdit({ kind: 'wrap', sheet: 0, row: 0, col: 0, wrap: true, old: false });
       let back = (await createAdapter(format).load(await a.save(), [])) as SheetModel;
-      expect(back.sheets[0]!.rows[0]![0]?.style).toMatchObject({ align: 'center', valign: 'middle', wrap: true });
+      expect(back.sheets[0]!.rows[0]![0]?.style).toMatchObject({ align: 'center', wrap: true });
       a.applyEdit(inverseEdit(al));
       back = (await createAdapter(format).load(await a.save(), [])) as SheetModel;
       const st = back.sheets[0]!.rows[0]![0]?.style;
       expect(st?.align).toBeUndefined();
-      expect(st?.valign).toBeUndefined();
       expect(st?.wrap).toBe(true);
     });
   }
 });
 
 describe('documents: alignment', () => {
-  it('Word: writes w:jc and the cell w:vAlign of an inserted table', async () => {
+  it('Word: writes w:jc, also in an inserted table', async () => {
     const a = createAdapter('docx');
     await a.load(makeDocx('simple'), []);
     a.applyEdit({ kind: 'paragraph', index: 0, text: 'First paragraph.', old: 'First paragraph.', fmt: fmt('First paragraph.', { align: 'center' }), oldFmt: fmt('First paragraph.') });
     const spec = { id: 1, after: 0, rows: 1, cols: 1 };
     a.applyEdit({ kind: 'table', op: 'insert', table: spec });
-    a.applyEdit({ kind: 'paragraph', index: cellIndex(spec, 0, 0), text: 'X', old: '', fmt: fmt('X', { valign: 'bottom', align: 'right' }), oldFmt: fmt('') });
+    a.applyEdit({ kind: 'paragraph', index: cellIndex(spec, 0, 0), text: 'X', old: '', fmt: fmt('X', { align: 'right' }), oldFmt: fmt('') });
     const xml = docXml(await a.save());
     expect(xml).toMatch(/<w:jc w:val="center"\/>.*First paragraph/);
-    expect(xml).toContain('<w:vAlign w:val="bottom"/>');
     expect(xml).toContain('<w:jc w:val="right"/>');
   });
 
-  it('Writer: writes derived styles and renders them again', async () => {
+  it('Writer: writes a derived style and renders it again', async () => {
     const a = createAdapter('odt');
     await a.load(makeOdt(), []);
     a.applyEdit({ kind: 'paragraph', index: 1, text: 'Mid', old: '', fmt: fmt('Mid', { align: 'center' }), oldFmt: fmt('') });
-    const spec = { id: 1, after: 1, rows: 1, cols: 1 };
-    a.applyEdit({ kind: 'table', op: 'insert', table: spec });
-    a.applyEdit({ kind: 'paragraph', index: cellIndex(spec, 0, 0), text: 'C', old: '', fmt: fmt('C', { valign: 'middle' }), oldFmt: fmt('') });
     const saved = await a.save();
     expect(content(saved)).toMatch(/fo:text-align="center"/);
-    expect(content(saved)).toMatch(/style:vertical-align="middle"/);
     const m = (await createAdapter('odt').load(saved, [])) as TextModel;
     expect(m.html).toMatch(/<p data-p="1" data-align="center">Mid<\/p>/);
-    expect(m.html).toContain('data-valign="middle"');
   });
 
-  it('view: the alignment buttons change the paragraph and the cell', () => {
+  it('view: the alignment button cycles the paragraph alignment; undo restores', () => {
     document.body.innerHTML = '<div id="root"></div>';
     const root = document.getElementById('root')!;
     const edits: Edit[] = [];
@@ -91,18 +84,15 @@ describe('documents: alignment', () => {
     btn('Horizontal').click();
     expect(p0.dataset['align']).toBe('center');
     expect(edits.at(-1)).toMatchObject({ kind: 'paragraph', index: 0, fmt: { align: 'center' } });
-    const p1 = root.querySelector<HTMLElement>('[data-p="1"]')!;
-    p1.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-    btn('Vertical').click();
-    expect(p1.closest('td')!.dataset['valign']).toBe('middle');
-    expect(edits.at(-1)).toMatchObject({ kind: 'paragraph', index: 1, fmt: { valign: 'middle' } });
+    btn('Horizontal').click();
+    expect(p0.dataset['align']).toBe('right');
     view.applyEdit(inverseEdit(edits.at(-1)!), {});
-    expect(p1.closest('td')!.dataset['valign']).toBeUndefined();
+    expect(p0.dataset['align']).toBe('center');
     view.dispose();
   });
 });
 
-describe('Markdown: table size and column alignment', () => {
+describe('Markdown: table size, alignment, lists, links', () => {
   const setup = (src: string, source = false) => {
     document.body.innerHTML = '<div id="root"></div>';
     localStorage.setItem('vsofx.mode.markdown', source ? 'source' : 'visual');
@@ -146,10 +136,81 @@ describe('Markdown: table size and column alignment', () => {
     r.selectNodeContents(td);
     window.getSelection()!.removeAllRanges();
     window.getSelection()!.addRange(r);
-    btn('Horizontal').click();
+    btn('Alignment').click();
     expect(result()).toMatch(/\| --- \| :---: \|/);
     btn('Table').click();
     expect(bar.hidden).toBe(false);
+    view.dispose();
+    localStorage.removeItem('vsofx.mode.markdown');
+  });
+
+  const caretIn = (el: Element) => {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.collapse(false);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(r);
+  };
+
+  it('visual: aligns a paragraph with <p align> and reads it back', () => {
+    const { root, btn, result, view } = setup('# Title\n\nSome text.\n');
+    caretIn(root.querySelector('.md-body p')!);
+    btn('Alignment').click();
+    expect(result()).toBe('# Title\n\n<p align="center">Some text.</p>\n');
+    view.dispose();
+    const again = setup('<p align="center">Some **text**.</p>\n');
+    const p = again.root.querySelector<HTMLElement>('.md-body p')!;
+    expect(p.style.textAlign).toBe('center');
+    expect(p.innerHTML).toContain('<strong>text</strong>');
+    caretIn(p);
+    again.btn('Alignment').click();
+    expect(again.result()).toBe('<p align="right">Some **text**.</p>\n');
+    again.btn('Alignment').click();
+    expect(again.result()).toBe('Some **text**.\n');
+    again.view.dispose();
+    localStorage.removeItem('vsofx.mode.markdown');
+  });
+
+  it('source: aligns the line with the cursor', () => {
+    const { btn, result, view } = setup('One\n\nTwo\n', true);
+    const ta = document.querySelector('textarea')!;
+    ta.selectionStart = ta.selectionEnd = 6;
+    btn('Alignment').click();
+    expect(result()).toBe('One\n\n<p align="center">Two</p>\n');
+    view.dispose();
+    localStorage.removeItem('vsofx.mode.markdown');
+  });
+
+  it('visual: bullet list on a paragraph makes a list item (not a heading) and back', () => {
+    const { root, btn, result, view } = setup('First\n\nSecond\n');
+    caretIn(root.querySelectorAll('.md-body p')[1]!);
+    btn('Bulleted').click();
+    expect(result()).toBe('First\n\n- Second\n');
+    caretIn(root.querySelector('.md-body li')!);
+    btn('Numbered').click();
+    expect(result()).toBe('First\n\n1. Second\n');
+    caretIn(root.querySelector('.md-body li')!);
+    btn('Numbered').click();
+    expect(result()).toBe('First\n\nSecond\n');
+    view.dispose();
+    localStorage.removeItem('vsofx.mode.markdown');
+  });
+
+  it('visual: the link bar links the selected text', () => {
+    const { root, btn, result, view } = setup('Visit the site now.\n');
+    const t = root.querySelector('.md-body p')!.firstChild!;
+    const r = document.createRange();
+    r.setStart(t, 10);
+    r.setEnd(t, 14);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(r);
+    btn('Link').click();
+    const bar = document.querySelector<HTMLElement>('.linkbar:not(.tablebar)')!;
+    expect(bar.hidden).toBe(false);
+    const input = bar.querySelector('input')!;
+    input.value = 'https://example.com';
+    Array.from(bar.querySelectorAll('button')).find((b) => b.textContent === 'Apply')!.click();
+    expect(result()).toBe('Visit the [site](https://example.com) now.\n');
     view.dispose();
     localStorage.removeItem('vsofx.mode.markdown');
   });

@@ -129,13 +129,14 @@ table.grid th.colhead .col-grip { position: absolute; top: 0; right: -3px; width
 table.grid th.colhead .col-grip:hover { background: var(--vscode-focusBorder); opacity: 0.6; }
 body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none; }
 
+/* empty lines can be clicked and typed into */
+.page [data-p].editable:empty { min-height: 1.2em; }
+.page p[data-p].editable:empty::before { content: 'b'; }
+
 /* ---- alignment set in the editor (Word, Writer) ---- */
 .page [data-align='left'] { text-align: left; }
 .page [data-align='center'] { text-align: center; }
 .page [data-align='right'] { text-align: right; }
 .page [data-align='justify'] { text-align: justify; }
-.page td[data-valign='top'], .page th[data-valign='top'] { vertical-align: top; }
-.page td[data-valign='middle'], .page th[data-valign='middle'] { vertical-align: middle; }
-.page td[data-valign='bottom'], .page th[data-valign='bottom'] { vertical-align: bottom; }
 /* Markdown table size bar */
 .md-tablebar .tb-field input { width: 4em; }

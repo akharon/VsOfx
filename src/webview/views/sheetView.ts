@@ -185,26 +185,22 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
         else if (edits.length) onEdit({ kind: 'batch', edits });
         scroller.focus();
       }, 'wrap');
-  /** Sets one side of the alignment of every selected cell to the next value after the active cell's. */
-  const alignCells = (side: 'h' | 'v') => {
+  /** Sets the alignment of every selected cell to the next value after the active cell's. */
+  const alignCells = () => {
     if (!canFormat) return;
     const g = range();
     const cur = cellAt(sel.r, sel.c)?.style;
     const H = ['left', 'center', 'right'] as const;
-    const V = ['bottom', 'middle', 'top'] as const;
-    const next =
-      side === 'h' ? H[(H.indexOf(cur?.align ?? 'left') + 1) % 3]! : V[(V.indexOf(cur?.valign ?? 'bottom') + 1) % 3]!;
+    const next = H[(H.indexOf(cur?.align ?? 'left') + 1) % 3]!;
     const edits: Edit[] = [];
     for (let r = g.r1; r <= g.r2; r++) {
       for (let c = g.c1; c <= g.c2; c++) {
         const st = cellAt(r, c)?.style;
         const old: CellAlign = {};
         if (st?.align) old.h = st.align;
-        if (st?.valign) old.v = st.valign;
         const align: CellAlign = { ...old };
-        if (side === 'h') align.h = next as CellAlign['h'];
-        else align.v = next as CellAlign['v'];
-        if (old.h !== align.h || old.v !== align.v) edits.push({ kind: 'align', sheet: active, row: r, col: c, align, old });
+        align.h = next;
+        if (old.h !== align.h) edits.push({ kind: 'align', sheet: active, row: r, col: c, align, old });
       }
     }
     if (edits.length > 2000) return;
@@ -215,8 +211,7 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
   const alignBtns = readonly
     ? []
     : [
-        tb.button('', 'Horizontal alignment: left → center → right', () => alignCells('h'), 'alignH'),
-        tb.button('', 'Vertical alignment: bottom → middle → top', () => alignCells('v'), 'alignV'),
+        tb.button('', 'Horizontal alignment: left → center → right', () => alignCells(), 'alignH'),
       ];
   if (!model.sheetOps) {
     for (const b of [wrapBtn, ...alignBtns]) {
@@ -517,7 +512,6 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
       const color = readableColor(st);
       if (color) td.style.color = color;
       if (st.align) td.style.textAlign = st.align;
-      if (st.valign) td.style.verticalAlign = st.valign;
     }
     if (!st?.align && cell && /^-?[\d.,]+%?$/.test(cell.text)) td.classList.add('num');
   }

@@ -2,7 +2,6 @@ import type { ApplyResult, Edit, NewParaEdit, ParagraphEdit, TextModel } from '.
 import {
   H_ALIGNS,
   SAFE_HREF,
-  V_ALIGNS,
   TASK_DONE,
   TASK_OPEN,
   PARA_BASE,
@@ -18,7 +17,6 @@ import {
   type ParaFmt,
   type Run,
   type TableSpec,
-  type VAlign,
 } from '../../shared/richtext';
 import { createFindBar, domFinder } from '../ui/findBar';
 import { addZoom, createToolbar, type IconName, type Toolbar } from '../ui/toolbar';
@@ -142,22 +140,13 @@ export function renderTextView(
     if (b) f.block = b;
     const a = el.dataset['align'] as HAlign | undefined;
     if (a) f.align = a;
-    const v = (el.dataset['valign'] ?? el.closest<HTMLElement>('td,th')?.dataset['valign']) as VAlign | undefined;
-    if (v) f.valign = v;
     return f;
   };
-  /** Shows the alignment attributes of a paragraph (the cell takes the vertical one). */
+  /** Shows the alignment of a paragraph (after undo / redo). */
   const showAlign = (el: HTMLElement, fmt?: ParaFmt) => {
-    if (fmt) {
-      if (fmt.align) el.dataset['align'] = fmt.align;
-      else delete el.dataset['align'];
-      if (fmt.valign) el.dataset['valign'] = fmt.valign;
-      else delete el.dataset['valign'];
-    }
-    const cell = el.closest<HTMLElement>('td,th');
-    const v = el.dataset['valign'];
-    if (cell && v) cell.dataset['valign'] = v;
-    else if (cell && fmt) delete cell.dataset['valign'];
+    if (!fmt) return;
+    if (fmt.align) el.dataset['align'] = fmt.align;
+    else delete el.dataset['align'];
   };
   const register = (el: HTMLElement, index: number) => {
     blocks.set(index, el);
@@ -228,18 +217,6 @@ export function renderTextView(
       const el = active!;
       const cur = (el.dataset['align'] as HAlign | undefined) ?? computedAlign(el);
       el.dataset['align'] = H_ALIGNS[(H_ALIGNS.indexOf(cur) + 1) % H_ALIGNS.length]!;
-      commit(el);
-    });
-    const vBtn = fmtBtn('Vertical alignment in a table cell: top → middle → bottom', 'alignV', () => {
-      const el = active!;
-      const cell = el.closest<HTMLElement>('td,th');
-      if (!cell) {
-        vBtn.title = 'Vertical alignment applies to table cells: put the cursor in a cell';
-        return;
-      }
-      const cur = (cell.dataset['valign'] as VAlign | undefined) ?? 'top';
-      el.dataset['valign'] = V_ALIGNS[(V_ALIGNS.indexOf(cur) + 1) % V_ALIGNS.length]!;
-      showAlign(el);
       commit(el);
     });
     buildLinkBar();

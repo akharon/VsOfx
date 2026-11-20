@@ -19,17 +19,13 @@ export interface Run {
 }
 
 export type HAlign = 'left' | 'center' | 'right' | 'justify';
-export type VAlign = 'top' | 'middle' | 'bottom';
 export const H_ALIGNS: readonly HAlign[] = ['left', 'center', 'right', 'justify'];
-export const V_ALIGNS: readonly VAlign[] = ['top', 'middle', 'bottom'];
 
 export interface ParaFmt {
   runs: Run[];
   block?: BlockKind;
   /** Horizontal alignment of the paragraph (only set when the user changed it). */
   align?: HAlign;
-  /** Vertical alignment of the table cell holding the paragraph (only set when changed). */
-  valign?: VAlign;
 }
 
 /** Task list items are plain paragraphs that start with one of these marks. */
@@ -61,8 +57,7 @@ export function isParaFmt(x: unknown): x is ParaFmt {
     f['runs'].length <= 10_000 &&
     f['runs'].every(isRun) &&
     (f['block'] === undefined || (BLOCK_KINDS as readonly unknown[]).includes(f['block'])) &&
-    (f['align'] === undefined || (H_ALIGNS as readonly unknown[]).includes(f['align'])) &&
-    (f['valign'] === undefined || (V_ALIGNS as readonly unknown[]).includes(f['valign']))
+    (f['align'] === undefined || (H_ALIGNS as readonly unknown[]).includes(f['align']))
   );
 }
 

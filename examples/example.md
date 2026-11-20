@@ -1,9 +1,9 @@
 
 Employee Directory
 
-A simple example document demonstrating Markdown syntax.
+# A simple example document demonstrating Markdown syntax.
 
-## Overview
+Overview
 
 This file contains employee information and project assignments.
 

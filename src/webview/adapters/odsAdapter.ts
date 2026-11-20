@@ -68,7 +68,7 @@ export class OdsAdapter implements FormatAdapter {
       const table = this.tables[edit.sheet];
       if (!table) throw new Error(`Sheet ${edit.sheet} does not exist`);
       const cell = locateCell(this.pkg.content, locateRow(this.pkg.content, table, edit.row), edit.col);
-      setCellProps(this.pkg.content, cell, edit.kind === 'wrap' ? { wrap: edit.wrap } : { h: edit.align.h ?? null, v: edit.align.v ?? null });
+      setCellProps(this.pkg.content, cell, edit.kind === 'wrap' ? { wrap: edit.wrap } : { h: edit.align.h ?? null });
       this.wraps = cellStyles(this.pkg.content);
       return { cell: this.view(cell) };
     }
@@ -300,7 +300,6 @@ function cellStyles(doc: Document): Map<string, CellStyle> {
     const st: CellStyle = {};
     if (p.wrap) st.wrap = true;
     if (p.h) st.align = p.h;
-    if (p.v) st.valign = p.v;
     if (name && Object.keys(st).length) map.set(name, st);
   }
   return map;
@@ -358,11 +357,9 @@ function setColumnWidth(doc: Document, table: Element, col: number, width: numbe
 interface CellProps {
   wrap?: boolean;
   h?: 'left' | 'center' | 'right';
-  v?: 'top' | 'middle' | 'bottom';
 }
-const DERIVED = /_Vsofx(W[01])?(H[lcr])?(V[tmb])?$/;
+const DERIVED = /_Vsofx(W[01])?(H[lcr])?$/;
 const H_CODE = { l: 'left', c: 'center', r: 'right' } as const;
-const V_CODE = { t: 'top', m: 'middle', b: 'bottom' } as const;
 
 /** Wrap / alignment as written in a cell style. */
 function stylePropsOf(s: Element | undefined): CellProps {
@@ -375,16 +372,14 @@ function stylePropsOf(s: Element | undefined): CellProps {
   if (ta === 'center') out.h = 'center';
   else if (ta === 'end' || ta === 'right') out.h = 'right';
   else if (ta === 'start' || ta === 'left') out.h = 'left';
-  const va = cp?.getAttributeNS(NS.style, 'vertical-align');
-  if (va === 'top' || va === 'middle' || va === 'bottom') out.v = va;
   return out;
 }
 
 /**
  * Changes wrap / alignment with a derived automatic style named after the cell's own style and the
- * overrides (`<base>_Vsofx[W1][Hc][Vt]`), so the cell's other formatting is kept and undo goes back.
+ * overrides (`<base>_Vsofx[W1][Hc]`), so the cell's other formatting is kept and undo goes back.
  */
-function setCellProps(doc: Document, cell: Element, change: { wrap?: boolean; h?: CellProps['h'] | null; v?: CellProps['v'] | null }): void {
+function setCellProps(doc: Document, cell: Element, change: { wrap?: boolean; h?: CellProps['h'] | null }): void {
   const tp = prefixOf(doc, NS.table, 'table');
   const cur = cell.getAttributeNS(NS.table, 'style-name') ?? '';
   const m = DERIVED.exec(cur);
@@ -393,20 +388,17 @@ function setCellProps(doc: Document, cell: Element, change: { wrap?: boolean; h?
   const over: CellProps = {};
   if (m?.[1]) over.wrap = m[1] === 'W1';
   if (m?.[2]) over.h = H_CODE[m[2][1] as keyof typeof H_CODE];
-  if (m?.[3]) over.v = V_CODE[m[3][1] as keyof typeof V_CODE];
   if (change.wrap !== undefined) over.wrap = change.wrap;
   if (change.h !== undefined) over.h = change.h ?? undefined;
-  if (change.v !== undefined) over.v = change.v ?? undefined;
   // an override equal to the cell's own style is no override
   if (over.wrap !== undefined && over.wrap === !!own.wrap) delete over.wrap;
   if (over.h === undefined || over.h === own.h) delete over.h;
-  if (over.v === undefined || over.v === own.v) delete over.v;
-  if (over.wrap === undefined && !over.h && !over.v) {
+  if (over.wrap === undefined && !over.h) {
     if (base) cell.setAttributeNS(NS.table, `${tp}:style-name`, base);
     else cell.removeAttributeNS(NS.table, 'style-name');
     return;
   }
-  const suffix = `${over.wrap === undefined ? '' : over.wrap ? 'W1' : 'W0'}${over.h ? `H${over.h[0]}` : ''}${over.v ? `V${over.v[0]}` : ''}`;
+  const suffix = `${over.wrap === undefined ? '' : over.wrap ? 'W1' : 'W0'}${over.h ? `H${over.h[0]}` : ''}`;
   const name = `${base || 'Default'}_Vsofx${suffix}`;
   if (!findStyle(doc, name)) {
     const src = base ? findStyle(doc, base) : undefined;
@@ -427,7 +419,6 @@ function setCellProps(doc: Document, cell: Element, change: { wrap?: boolean; h?
     const fp = prefixOf(doc, NS.fo, 'fo');
     const sp = prefixOf(doc, NS.style, 'style');
     if (over.wrap !== undefined) props.setAttributeNS(NS.fo, `${fp}:wrap-option`, over.wrap ? 'wrap' : 'no-wrap');
-    if (over.v) props.setAttributeNS(NS.style, `${sp}:vertical-align`, over.v);
     if (over.h) {
       props.setAttributeNS(NS.style, `${sp}:text-align-source`, 'fix');
       let pp = descendantsNS(s, NS.style, 'paragraph-properties')[0];

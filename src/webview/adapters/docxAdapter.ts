@@ -86,7 +86,7 @@ export class DocxAdapter implements FormatAdapter {
     // The Node build of mammoth (used by unit tests) reads `buffer` instead of `arrayBuffer`.
     const B = (globalThis as { Buffer?: { from(b: ArrayBuffer): unknown } }).Buffer;
     if (B) input.buffer = B.from(ab);
-    const result = await mammoth.convertToHtml(input as { arrayBuffer: ArrayBuffer });
+    const result = await mammoth.convertToHtml(input as { arrayBuffer: ArrayBuffer }, { ignoreEmptyParagraphs: false } as never);
     this.html = result.value;
 
     for (const e of edits) this.applyEdit(e);
@@ -195,7 +195,15 @@ export class DocxAdapter implements FormatAdapter {
       attrs: (el: Element, tag: string) => {
         if (!/^(p|h[1-6]|li)$/.test(tag)) return undefined;
         const t = normText(blockText(el));
-        if (!t) return undefined;
+        if (!t) {
+          // an empty line: the next document paragraph if that one is empty too (so it can be typed into)
+          if (tag !== 'p' || el.getElementsByTagName('img').length) return undefined;
+          if (cursor < this.paragraphs.length && normText(this.paragraphs[cursor] ?? '') === '') {
+            assigned.set(el, cursor);
+            return { 'data-p': String(cursor++) };
+          }
+          return undefined;
+        }
         candidates++;
         const limit = Math.min(this.paragraphs.length, cursor + LOOKAHEAD);
         for (let j = cursor; j < limit; j++) {
@@ -208,7 +216,6 @@ export class DocxAdapter implements FormatAdapter {
             const attrs: Record<string, string> = { 'data-p': String(j) };
             if (f?.block) attrs['data-block'] = f.block;
             if (f?.align) attrs['data-align'] = f.align;
-            if (f?.valign) attrs['data-valign'] = f.valign;
             return attrs;
           }
         }

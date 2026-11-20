@@ -1,5 +1,5 @@
 import type { ApplyResult, Edit, ParagraphEdit, TextModel } from '../../shared/model';
-import { cellIndex, fmtEquals, isCellIndex, isNewParaIndex, SAFE_HREF, type BlockKind, type HAlign, type ParaFmt, type Run, type TableSpec, type VAlign } from '../../shared/richtext';
+import { cellIndex, fmtEquals, isCellIndex, isNewParaIndex, SAFE_HREF, type BlockKind, type HAlign, type ParaFmt, type Run, type TableSpec } from '../../shared/richtext';
 import { escapeHtml } from '../sanitize';
 import type { FormatAdapter } from './Adapter';
 import { collectParagraphs, isEl, MIME_ODT, NS, odfText, openOdf, saveOdf, setOdfText, type OdfPackage } from './odf';
@@ -30,7 +30,6 @@ const HEADING_PT = [24, 20, 16, 14, 12, 12];
 const FLAG_KEYS = ['b', 'i', 'u', 's', 'code', 'sup', 'sub'] as const;
 /** Suffixes of the derived alignment styles (see applyAlign). */
 const ALIGN_SUFFIX = /_VsofxA[lcrj]$/;
-const VALIGN_SUFFIX = /_VsofxV[tmb]$/;
 
 /**
  * .odt: paragraphs and headings of content.xml with their character formatting.
@@ -48,7 +47,6 @@ export class OdtAdapter implements FormatAdapter {
   private styles = new Map<string, InlineStyle>();
   private listKinds = new Map<string, 'ul' | 'ol'>();
   private paraAlign = new Map<string, HAlign>();
-  private cellVAlign = new Map<string, VAlign>();
   private readonly created = new Set<string>();
 
   async load(bytes: Uint8Array, edits: Edit[]): Promise<TextModel> {
@@ -112,7 +110,7 @@ export class OdtAdapter implements FormatAdapter {
     this.applyAlign(this.paras.get(edit.index)!, edit.fmt);
   }
 
-  /** Paragraph alignment and cell vertical alignment through derived automatic styles. */
+  /** Paragraph alignment through a derived automatic style. */
   private applyAlign(el: Element, fmt: ParaFmt): void {
     const doc = this.pkg.content;
     if (fmt.align) {
@@ -122,15 +120,6 @@ export class OdtAdapter implements FormatAdapter {
         p.setAttributeNS(NS.fo, `${prefixFor(doc, NS.fo, 'fo')}:text-align`, fmt.align === 'left' ? 'start' : fmt.align === 'right' ? 'end' : fmt.align!),
       );
       el.setAttributeNS(NS.text, `${pfx(el)}style-name`, name);
-    }
-    const cell = el.parentNode as Element | null;
-    if (fmt.valign && cell && isEl(cell, NS.table, 'table-cell')) {
-      const cur = cell.getAttributeNS(NS.table, 'style-name') ?? '';
-      const base = cur.replace(VALIGN_SUFFIX, '');
-      const name = this.derivedStyle(base, `_VsofxV${fmt.valign[0]}`, 'table-cell', 'table-cell-properties', (p) =>
-        p.setAttributeNS(NS.style, `${prefixFor(doc, NS.style, 'style')}:vertical-align`, fmt.valign!),
-      );
-      cell.setAttributeNS(NS.table, `${prefixFor(doc, NS.table, 'table')}:style-name`, name);
     }
   }
 
@@ -454,15 +443,12 @@ export class OdtAdapter implements FormatAdapter {
   private readStyles(): void {
     this.styles = readStyles(this.pkg.content);
     this.paraAlign = new Map();
-    this.cellVAlign = new Map();
     for (const s of descendantsNS(this.pkg.content, NS.style, 'style')) {
       const name = s.getAttributeNS(NS.style, 'name');
       if (!name) continue;
       const ta = descendantsNS(s, NS.style, 'paragraph-properties')[0]?.getAttributeNS(NS.fo, 'text-align');
       const h: HAlign | undefined = ta === 'center' ? 'center' : ta === 'justify' ? 'justify' : ta === 'end' || ta === 'right' ? 'right' : ta === 'start' || ta === 'left' ? 'left' : undefined;
       if (h && s.getAttributeNS(NS.style, 'family') === 'paragraph') this.paraAlign.set(name, h);
-      const va = descendantsNS(s, NS.style, 'table-cell-properties')[0]?.getAttributeNS(NS.style, 'vertical-align');
-      if (va === 'top' || va === 'middle' || va === 'bottom') this.cellVAlign.set(name, va);
     }
     this.listKinds = new Map();
     for (const ls of descendantsNS(this.pkg.content, NS.text, 'list-style')) {
@@ -504,8 +490,7 @@ export class OdtAdapter implements FormatAdapter {
           out += `<tr>${blocks(e)}</tr>`;
         } else if (isEl(e, NS.table, 'table-cell')) {
           const span = Number(e.getAttributeNS(NS.table, 'number-columns-spanned') || 1);
-          const va = this.cellVAlign.get(e.getAttributeNS(NS.table, 'style-name') ?? '');
-          out += `<td${span > 1 && span < 1000 ? ` colspan="${span}"` : ''}${va ? ` data-valign="${va}"` : ''}>${blocks(e)}</td>`;
+          out += `<td${span > 1 && span < 1000 ? ` colspan="${span}"` : ''}>${blocks(e)}</td>`;
         } else if (isEl(e, NS.draw, 'frame') || isEl(e, NS.office, 'annotation') || isEl(e, NS.text, 'note')) {
           continue;
         } else {

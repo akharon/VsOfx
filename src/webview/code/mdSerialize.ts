@@ -43,8 +43,14 @@ function block(el: HTMLElement): string {
     case 'div':
       // the browser wraps lines in <div> in some cases; a div with blocks inside is a container
       return Array.from(el.children).some((c) => isBlock(c)) ? children(el) : escapeLineStart(inlineChildren(el).trim());
-    default:
+    default: {
+      const a = el.style.textAlign;
+      if (tag === 'p' && (a === 'center' || a === 'right' || a === 'justify')) {
+        // one line: a line break inside would end the HTML form
+        return `<p align="${a}">${inlineChildren(el).replace(/\\\n/g, ' ').replace(/\n/g, ' ').trim()}</p>`;
+      }
       return escapeLineStart(inlineChildren(el).trim());
+    }
   }
 }
 

@@ -83,8 +83,6 @@ export class XlsxAdapter implements FormatAdapter {
       const al: Partial<ExcelNS.Alignment> = { ...(cell.alignment ?? {}) };
       if (edit.align.h) al.horizontal = edit.align.h;
       else delete al.horizontal;
-      if (edit.align.v) al.vertical = edit.align.v;
-      else delete al.vertical;
       cell.alignment = al;
       return { cell: this.cellView(cell) };
     }
@@ -260,9 +258,6 @@ function styleOf(cell: ExcelNS.Cell): CellStyle | undefined {
   }
   const h = cell.alignment?.horizontal;
   if (h === 'left' || h === 'center' || h === 'right') s.align = h;
-  const v = cell.alignment?.vertical;
-  if (v === 'top' || v === 'bottom') s.valign = v;
-  else if (v === 'middle') s.valign = 'middle';
   if (cell.alignment?.wrapText) s.wrap = true;
   return Object.keys(s).length ? s : undefined;
 }

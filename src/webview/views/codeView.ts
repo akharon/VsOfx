@@ -103,8 +103,12 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
   let tableSel: { start: number; end: number } | undefined;
   if (!readonly) {
     tb.separator();
-    const fmt =(title: string, ic: IconName, vis: () => void, src: (s: Selection) => Selection) =>
-      tb.button('', title, () => (mode === 'visual' ? (vis(), body.focus()) : transformSelection(src)), ic);
+    const fmt = (title: string, ic: IconName, vis: () => void, src: (s: Selection) => Selection, keepFocus = true) => {
+      const b = tb.button('', title, () => (mode === 'visual' ? (vis(), keepFocus && body.focus()) : transformSelection(src)), ic);
+      // the click must not take the cursor / selection out of the document
+      b.addEventListener('mousedown', (ev) => ev.preventDefault());
+      return b;
+    };
     fmt('Bold (Ctrl+B)', 'bold', () => exec('bold'), (s) => toggleWrap(s, '**'));
     fmt('Italic (Ctrl+I)', 'italic', () => exec('italic'), (s) => toggleWrap(s, '_'));
     fmt('Inline code', 'code', toggleInlineCode, (s) => toggleWrap(s, '`', 'code'));
@@ -113,8 +117,8 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
       const lvl = /^(#{1,6})\s/.exec(line)?.[1]?.length ?? 0;
       return setHeading(s, lvl >= 3 ? 0 : lvl + 1);
     });
-    fmt('Bulleted list', 'listBullet', () => exec('insertUnorderedList'), (s) => togglePrefix(s, '- ', /^\s*[-*+]\s+(\[[ xX]\]\s+)?/));
-    fmt('Numbered list', 'listNumber', () => exec('insertOrderedList'), (s) => togglePrefix(s, (i) => `${i + 1}. `, /^\s*\d+[.)]\s+/));
+    fmt('Bulleted list', 'listBullet', () => toggleList('UL'), (s) => togglePrefix(s, '- ', /^\s*[-*+]\s+(\[[ xX]\]\s+)?/));
+    fmt('Numbered list', 'listNumber', () => toggleList('OL'), (s) => togglePrefix(s, (i) => `${i + 1}. `, /^\s*\d+[.)]\s+/));
     fmt('Task list', 'checkbox', toggleTask, (s) => togglePrefix(s, '- [ ] ', /^\s*[-*+]\s+\[[ xX]\]\s+/));
     fmt('Quote', 'quote', toggleQuote, (s) => togglePrefix(s, '> ', /^>\s?/));
     fmt('Link (Ctrl+K)', 'link', openLinkBar, (s) => {
@@ -122,13 +126,11 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
       const ins = `[${label}](https://)`;
       const at = s.start + label.length + 3;
       return { text: s.text.slice(0, s.start) + ins + s.text.slice(s.end), start: at, end: at + 8 };
-    });
+    }, false);
     const tableBtn = tb.button('', 'Table: choose its size, inserted at the cursor', () => openTableBar(), 'table');
     tableBtn.addEventListener('mousedown', (ev) => ev.preventDefault());
-    alignHBtn = tb.button('', 'Horizontal alignment of the table column with the cursor: left → center → right', () => alignColumn(), 'alignH');
+    alignHBtn = tb.button('', 'Alignment of the paragraph or table column with the cursor: left → center → right', () => alignColumn(), 'alignH');
     alignHBtn.addEventListener('mousedown', (ev) => ev.preventDefault());
-    const vBtn = tb.button('', 'Vertical alignment: Markdown cannot store it', () => {}, 'alignV');
-    vBtn.disabled = true;
     buildTableBar();
   }
   tb.spacer();
@@ -409,73 +411,238 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
       return { text: before + ins + s.text.slice(s.end), start: at0, end: at0 + heads[0]!.length };
     });
   }
-  /** Cycles the alignment of the table column with the cursor (Markdown stores it per column). */
+  /**
+   * Cycles the alignment left → center → right: of the table column with the cursor (Markdown
+   * stores it per column) or of the paragraph (written as `<p align="…">text</p>`).
+   */
   function alignColumn(): void {
+    const cycle = (cur: string) => (cur === 'center' ? 'right' : cur === 'right' ? 'left' : 'center');
     if (mode !== 'visual') {
       transformSelection((s) => {
-        // source: the delimiter row of the table around the cursor, column under the cursor
         const lines = s.text.split('\n');
         let pos = 0;
         let li = 0;
         while (li < lines.length - 1 && pos + lines[li]!.length < s.start) pos += lines[li++]!.length + 1;
-        const cellAt = (s.text.slice(pos, s.start).match(/(?<!\\)\|/g)?.length ?? 0) - (lines[li]!.trimStart().startsWith('|') ? 1 : 0);
-        let top = li;
-        while (top > 0 && /^\s*\|/.test(lines[top - 1]!)) top--;
-        const d = top + 1;
-        if (!/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(lines[d] ?? '') || !/\|/.test(lines[li] ?? '')) return s;
-        const parts = lines[d]!.trim().replace(/^\||\|$/g, '').split('|');
-        const p = parts[Math.max(0, Math.min(parts.length - 1, cellAt))]!.trim();
-        const cur = p.startsWith(':') && p.endsWith(':') ? 'center' : p.endsWith(':') ? 'right' : 'left';
-        const next = cur === 'left' ? ':---:' : cur === 'center' ? '---:' : '---';
-        parts[Math.max(0, Math.min(parts.length - 1, cellAt))] = ` ${next} `;
-        lines[d] = `|${parts.join('|')}|`;
-        const text = lines.join('\n');
-        return { text, start: s.start, end: s.start };
+        const line = lines[li] ?? '';
+        if (/^\s*\|/.test(line)) {
+          // table: the delimiter row of the table around the cursor, column under the cursor
+          const cellAt = (s.text.slice(pos, s.start).match(/(?<!\\)\|/g)?.length ?? 0) - (line.trimStart().startsWith('|') ? 1 : 0);
+          let top = li;
+          while (top > 0 && /^\s*\|/.test(lines[top - 1]!)) top--;
+          const d = top + 1;
+          if (!/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(lines[d] ?? '')) return s;
+          const parts = lines[d]!.trim().replace(/^\||\|$/g, '').split('|');
+          const k = Math.max(0, Math.min(parts.length - 1, cellAt));
+          const p = parts[k]!.trim();
+          const cur = p.startsWith(':') && p.endsWith(':') ? 'center' : p.endsWith(':') ? 'right' : 'left';
+          const next = cycle(cur);
+          parts[k] = ` ${next === 'center' ? ':---:' : next === 'right' ? '---:' : '---'} `;
+          lines[d] = `|${parts.join('|')}|`;
+          return { text: lines.join('\n'), start: s.start, end: s.start };
+        }
+        if (!line.trim()) return s;
+        const m = /^<p align="(\w+)">(.*)<\/p>\s*$/.exec(line);
+        const next = cycle(m?.[1] ?? 'left');
+        const inner = m ? m[2]! : line;
+        lines[li] = next === 'left' ? inner : `<p align="${next}">${inner}</p>`;
+        const at = pos + lines[li]!.length;
+        return { text: lines.join('\n'), start: at, end: at };
       });
       return;
     }
-    const cell = currentElement()?.closest<HTMLTableCellElement>('td,th');
+    const el = currentElement();
+    const cell = el?.closest<HTMLTableCellElement>('td,th');
     const table = cell?.closest('table');
-    if (!cell || !table) {
-      if (alignHBtn) alignHBtn.title = 'Markdown aligns only table columns: put the cursor in a table cell';
+    if (cell && table) {
+      const col = cell.cellIndex;
+      const next = cycle(cell.style.textAlign || 'left');
+      for (const tr of Array.from(table.rows)) {
+        const c = tr.cells[col];
+        if (c) c.style.textAlign = next === 'left' ? '' : next;
+      }
+      syncVisual();
       return;
     }
-    const col = cell.cellIndex;
-    const cur = cell.style.textAlign || 'left';
-    const next = cur === 'left' ? 'center' : cur === 'center' ? 'right' : '';
-    for (const tr of Array.from(table.rows)) {
-      const c = tr.cells[col];
-      if (c) c.style.textAlign = next;
+    const p = blockOf(currentNode());
+    if (!p) return;
+    if (p.tagName !== 'P' && p.tagName !== 'DIV') {
+      if (alignHBtn) alignHBtn.title = 'Markdown can align paragraphs and table columns (not headings, lists or quotes)';
+      return;
     }
+    let target = p;
+    if (p.tagName === 'DIV') {
+      // a line the browser created: make it a paragraph first
+      target = document.createElement('p');
+      while (p.firstChild) target.appendChild(p.firstChild);
+      p.replaceWith(target);
+    }
+    const next = cycle(target.style.textAlign || 'left');
+    target.style.textAlign = next === 'left' ? '' : next;
+    if (!target.getAttribute('style')) target.removeAttribute('style');
+    placeCaretIn(target);
     syncVisual();
   }
+
+  function placeCaretIn(el: Node, atEnd = true): void {
+    const sel = window.getSelection();
+    if (!sel) return;
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.collapse(!atEnd);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+
+  /** Bulleted / numbered list on and off for the block with the cursor (no browser list command). */
+  function toggleList(tag: 'UL' | 'OL'): void {
+    const blk = blockOf(currentNode());
+    const li = currentElement()?.closest('li');
+    if (!blk) {
+      const list = document.createElement(tag);
+      const item = document.createElement('li');
+      item.appendChild(document.createElement('br'));
+      list.appendChild(item);
+      body.appendChild(list);
+      placeCaretIn(item, false);
+    } else if (li && body.contains(li)) {
+      const list = li.parentElement!;
+      if (list.tagName === tag) {
+        // leave the list: the item becomes a paragraph; following items form a new list
+        const p = document.createElement('p');
+        for (const c of Array.from(li.childNodes)) {
+          if (c.nodeType === 1 && /^(UL|OL)$/.test((c as Element).tagName)) continue;
+          if (c.nodeType === 1 && (c as Element).tagName === 'P') {
+            while (c.firstChild) p.appendChild(c.firstChild);
+            continue;
+          }
+          if (c.nodeType === 1 && (c as Element).classList.contains('task')) continue;
+          p.appendChild(c);
+        }
+        if (!p.firstChild) p.appendChild(document.createElement('br'));
+        const tail = document.createElement(list.tagName);
+        while (li.nextSibling) tail.appendChild(li.nextSibling);
+        const nested = Array.from(li.children).filter((c) => /^(UL|OL)$/.test(c.tagName));
+        li.remove();
+        const outerLi = list.parentElement?.closest('li');
+        if (outerLi) {
+          // a nested item moves up one level as text of its own item
+          const up = document.createElement('li');
+          while (p.firstChild) up.appendChild(p.firstChild);
+          up.append(...nested);
+          if (tail.firstChild) up.appendChild(tail);
+          outerLi.after(up);
+          if (!list.firstChild) list.remove();
+          placeCaretIn(up);
+        } else {
+          list.after(p);
+          if (tail.firstChild) p.after(tail);
+          for (const n of nested) (tail.firstChild ? tail : p).after(n);
+          if (!list.firstChild) list.remove();
+          placeCaretIn(p);
+        }
+      } else {
+        // switch the kind of this list
+        const other = document.createElement(tag);
+        for (const a of Array.from(list.attributes)) if (a.name !== 'start' && a.name !== 'data-markup') other.setAttribute(a.name, a.value);
+        while (list.firstChild) other.appendChild(list.firstChild);
+        list.replaceWith(other);
+        placeCaretIn(li);
+      }
+    } else if (/^(P|DIV|H[1-6])$/.test(blk.tagName)) {
+      const item = document.createElement('li');
+      while (blk.firstChild) item.appendChild(blk.firstChild);
+      if (!item.firstChild) item.appendChild(document.createElement('br'));
+      const prev = blk.previousElementSibling;
+      if (prev && prev.tagName === tag) {
+        prev.appendChild(item);
+        blk.remove();
+      } else {
+        const list = document.createElement(tag);
+        list.appendChild(item);
+        blk.replaceWith(list);
+      }
+      placeCaretIn(item);
+    } else return;
+    syncVisual();
+  }
+
   function openLinkBar(): void {
     if (mode !== 'visual') return;
     const sel = window.getSelection();
     savedRange = sel && sel.rangeCount && body.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : undefined;
-    linkInput.value = currentElement()?.closest('a')?.getAttribute('href') ?? 'https://';
+    if (!savedRange) {
+      // no cursor in the document: the link goes to the end
+      savedRange = document.createRange();
+      savedRange.selectNodeContents(body.lastElementChild ?? body);
+      savedRange.collapse(false);
+    }
+    const node = savedRange.commonAncestorContainer;
+    linkInput.value = (node.nodeType === 1 ? (node as Element) : node.parentElement)?.closest('a')?.getAttribute('href') ?? 'https://';
     linkBar.hidden = false;
     linkInput.focus();
     linkInput.select();
   }
+  /** Applies (or with an empty address removes) the link at the saved selection. */
+  function applyLink(apply: boolean): void {
+    linkBar.hidden = true;
+    const r = savedRange;
+    savedRange = undefined;
+    body.focus();
+    if (!r) return;
+    const node = r.commonAncestorContainer;
+    const a = (node.nodeType === 1 ? (node as Element) : node.parentElement)?.closest('a');
+    const url = linkInput.value.trim();
+    if (!apply) {
+      placeCaretIn(r.startContainer);
+      return;
+    }
+    if (!url || url === 'https://') {
+      if (a && body.contains(a)) a.replaceWith(...Array.from(a.childNodes));
+    } else if (/^\s*(javascript|vbscript|data|file):/i.test(url)) {
+      return;
+    } else if (a && body.contains(a)) {
+      a.setAttribute('href', url);
+      a.title = url;
+    } else {
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.title = url;
+      if (r.collapsed) link.textContent = url;
+      else link.appendChild(r.extractContents());
+      r.insertNode(link);
+      placeCaretIn(link);
+    }
+    syncVisual();
+  }
   linkInput.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Enter' && ev.key !== 'Escape') return;
     ev.preventDefault();
-    linkBar.hidden = true;
-    body.focus();
-    const sel = window.getSelection();
-    if (savedRange && sel) {
-      sel.removeAllRanges();
-      sel.addRange(savedRange);
-    }
-    if (ev.key === 'Escape') return;
-    const url = linkInput.value.trim();
-    if (!url) exec('unlink');
-    else if (/^\s*(javascript|vbscript|data):/i.test(url)) return;
-    else if (sel && sel.isCollapsed) exec('insertHTML', `<a href="${escapeAttr(url)}">${escapeHtml(url)}</a>`);
-    else exec('createLink', url);
+    applyLink(ev.key === 'Enter');
   });
-  linkInput.addEventListener('blur', () => (linkBar.hidden = true));
+  {
+    const mk = (label: string, fn: () => void) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tb-btn';
+      b.textContent = label;
+      b.addEventListener('mousedown', (ev) => ev.preventDefault());
+      b.addEventListener('click', fn);
+      return b;
+    };
+    const hint = document.createElement('span');
+    hint.className = 'find-status';
+    hint.textContent = 'empty address + Apply: remove the link';
+    linkBar.append(
+      mk('Apply', () => applyLink(true)),
+      mk('Remove', () => {
+        linkInput.value = '';
+        applyLink(true);
+      }),
+      mk('Cancel', () => applyLink(false)),
+      hint,
+    );
+  }
+
 
   // links do not navigate; anchors scroll; task checkboxes toggle
   visual.addEventListener('click', (ev) => {
@@ -692,8 +859,3 @@ function mapPos(p: number, e: TextEdit): number {
 function slug(s: string): string {
   return s.trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s+/g, '-');
 }
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
-}
-const escapeAttr = escapeHtml;

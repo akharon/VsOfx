@@ -57,7 +57,6 @@ const ICONS = {
   link: ['M6.5 9.5l3-3', 'M7.5 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1', 'M8.5 11.5l-1 1A2.5 2.5 0 0 1 4 9l1-1'],
   table: ['M2 3h12v10H2z', 'M2 6.5h12', 'M2 10h12', 'M6.5 3v10'],
   alignH: ['M2 3.5h12', 'M4 6.5h8', 'M2 9.5h12', 'M4 12.5h8'],
-  alignV: ['M2 2.5h12', 'M2 13.5h12', 'M8 4.5v7', 'M6 6.5l2-2 2 2', 'M6 9.5l2 2 2-2'],
 } satisfies Record<string, string[]>;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';

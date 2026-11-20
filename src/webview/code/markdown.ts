@@ -6,6 +6,27 @@ import MarkdownIt from 'markdown-it';
 
 const md = new MarkdownIt({ html: false, linkify: true, typographer: false, breaks: false });
 
+// Aligned paragraphs: the one piece of HTML that GitHub and most renderers accept for alignment,
+// `<p align="center">text</p>` on one line. Only this exact form is recognised (raw HTML stays off).
+const ALIGNED = /^<p align="(left|center|right|justify)">(.*)<\/p>\s*$/;
+md.block.ruler.before('paragraph', 'aligned_paragraph', (state, startLine, _endLine, silent) => {
+  if (state.sCount[startLine]! - state.blkIndent >= 4) return false;
+  const line = state.src.slice(state.bMarks[startLine]! + state.tShift[startLine]!, state.eMarks[startLine]);
+  const m = ALIGNED.exec(line);
+  if (!m) return false;
+  if (silent) return true;
+  const open = state.push('paragraph_open', 'p', 1);
+  open.map = [startLine, startLine + 1];
+  open.attrSet('style', `text-align: ${m[1]}`);
+  const inl = state.push('inline', '', 0);
+  inl.content = m[2]!.trim();
+  inl.map = [startLine, startLine + 1];
+  inl.children = [];
+  state.push('paragraph_close', 'p', -1);
+  state.line = startLine + 1;
+  return true;
+});
+
 // source line of each block, so the preview can jump to the source
 md.core.ruler.push('source_lines', (state) => {
   for (const t of state.tokens) {
