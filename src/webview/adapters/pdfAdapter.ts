@@ -143,7 +143,18 @@ export class PdfAdapter implements FormatAdapter {
       for (const t of s.texts.values()) {
         const r = box(s.rects.get(t.id) ?? t.rect);
         const text = [...t.text].map((c) => (known.has(c.codePointAt(0)!) || c === '\n' ? c : '?')).join('');
-        page(t.page).drawText(text, { x: r.x, y: r.y, size: t.size, font, color: rgb(0, 0, 0), lineHeight: t.size * 1.2 });
+        // From the top of the box, wrapped at its width: the same layout the editor shows.
+        const ascent = font.heightAtSize(t.size, { descender: false });
+        page(t.page).drawText(text, {
+          x: r.x,
+          y: r.y + r.height - ascent,
+          size: t.size,
+          font,
+          color: rgb(0, 0, 0),
+          lineHeight: t.size * 1.2,
+          maxWidth: Math.max(r.width, t.size),
+          wordBreaks: [' ', '-'],
+        });
       }
     }
 

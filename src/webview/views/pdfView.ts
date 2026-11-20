@@ -48,7 +48,7 @@ interface PageRec {
 type Placing = 'text' | 'checkbox' | 'dropdown' | 'freetext' | null;
 
 const SIZES: Record<Exclude<Placing, null>, [number, number]> = {
-  text: [150, 22],
+  text: [180, 40],
   checkbox: [16, 16],
   dropdown: [130, 22],
   freetext: [150, 18],
@@ -520,7 +520,20 @@ export function renderPdfView(
           if (ev.key === 'Escape') {
             el.value = String(current(w.name));
             el.blur();
-          } else if (ev.key === 'Enter' && w.kind === 'text') el.blur();
+          } else if (ev.key === 'Enter' && w.kind === 'text') {
+            ev.preventDefault();
+            const spec = state.added.get(w.id);
+            // Shift+Enter in a field added here turns it into a multi-line field and keeps the new line.
+            if (ev.shiftKey && spec && !ro) {
+              const pos = el.selectionStart ?? el.value.length;
+              const value = `${el.value.slice(0, pos)}\n${el.value.slice(el.selectionEnd ?? pos)}`;
+              setMultiline(spec, true);
+              commitValue(w.name, value);
+              const next = pagesEl.querySelector<HTMLTextAreaElement>(`.pdf-w[data-id="${CSS.escape(w.id)}"] > textarea`);
+              next?.focus();
+              next?.setSelectionRange(pos + 1, pos + 1);
+            } else el.blur();
+          }
         });
         ctl = el;
         break;
@@ -718,6 +731,7 @@ export function renderPdfView(
         page: rec.index,
         rect,
         ...(kind === 'dropdown' ? { options: ['Option 1', 'Option 2', 'Option 3'] } : {}),
+        ...(kind === 'text' ? { multiline: true } : {}),
       };
       names.add(spec.name);
       emit({ op: 'addField', spec });
@@ -771,6 +785,13 @@ export function renderPdfView(
       const opts = document.createElement('input');
       opts.value = (spec.options ?? []).join(', ');
       if (spec.kind === 'dropdown') label('Options (comma separated)', opts);
+      if (spec.kind === 'text') {
+        const ml = document.createElement('input');
+        ml.type = 'checkbox';
+        ml.checked = spec.multiline === true;
+        ml.addEventListener('change', () => setMultiline(spec, ml.checked));
+        label('Multi-line', ml);
+      }
       btn('Apply', () => {
         const nm = name.value.trim();
         if (!nm) return;
@@ -803,6 +824,14 @@ export function renderPdfView(
     gap.className = 'tb-spacer';
     panel.appendChild(gap);
     btn('Delete', () => deleteSelected(), 'danger', 'trash');
+  }
+
+  /** Switches an added text field between one line and several (replaces it, so undo restores it). */
+  function setMultiline(spec: FieldSpec, on: boolean): void {
+    if ((spec.multiline === true) === on) return;
+    const cur = { ...spec, rect: rectOf(spec.id, spec.rect) };
+    emit({ op: 'dropField', spec: cur });
+    emit({ op: 'addField', spec: { ...cur, multiline: on } });
   }
 
   function deleteSelected(): void {
