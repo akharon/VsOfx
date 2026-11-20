@@ -39,6 +39,15 @@ export interface TextSpec {
   color?: string; // "#rrggbb"
 }
 
+/** An image placed on a page (drawn into the page content on save). */
+export interface ImageSpec {
+  id: string; // "i1", "i2" ...
+  page: number;
+  rect: Rect;
+  mime: 'image/png' | 'image/jpeg';
+  data: string; // base64
+}
+
 export type FieldValue = string | boolean;
 
 export type PdfOp =
@@ -50,6 +59,8 @@ export type PdfOp =
   | { op: 'setRect'; id: string; rect: Rect; old: Rect }
   | { op: 'addText'; spec: TextSpec }
   | { op: 'dropText'; spec: TextSpec }
+  | { op: 'addImage'; spec: ImageSpec }
+  | { op: 'dropImage'; spec: ImageSpec }
   | { op: 'setText'; id: string; text: string; old: string }
   | { op: 'setRotation'; page: number; deg: number; old: number } // extra rotation, multiple of 90
   | { op: 'deletePage'; page: number }
@@ -78,6 +89,10 @@ export function inverseOp(o: PdfOp): PdfOp {
       return { op: 'dropText', spec: o.spec };
     case 'dropText':
       return { op: 'addText', spec: o.spec };
+    case 'addImage':
+      return { op: 'dropImage', spec: o.spec };
+    case 'dropImage':
+      return { op: 'addImage', spec: o.spec };
     case 'setText':
       return { ...o, text: o.old, old: o.text };
     case 'setRotation':
@@ -124,6 +139,21 @@ function isTextSpec(v: unknown): v is TextSpec {
     (s['color'] === undefined || (typeof s['color'] === 'string' && /^#[0-9a-f]{6}$/i.test(s['color'])));
 }
 
+function isImageSpec(v: unknown): v is ImageSpec {
+  if (typeof v !== 'object' || v === null) return false;
+  const s = v as Record<string, unknown>;
+  const d = s['data'];
+  return (
+    str(s['id']) &&
+    int(s['page']) &&
+    rect(s['rect']) &&
+    (s['mime'] === 'image/png' || s['mime'] === 'image/jpeg') &&
+    typeof d === 'string' &&
+    d.length <= 40_000_000 &&
+    /^[A-Za-z0-9+/=]*$/.test(d)
+  );
+}
+
 export function isPdfOp(x: unknown): x is PdfOp {
   if (typeof x !== 'object' || x === null) return false;
   const o = x as Record<string, unknown>;
@@ -141,6 +171,9 @@ export function isPdfOp(x: unknown): x is PdfOp {
     case 'addText':
     case 'dropText':
       return isTextSpec(o['spec']);
+    case 'addImage':
+    case 'dropImage':
+      return isImageSpec(o['spec']);
     case 'setText':
       return str(o['id']) && str(o['text']) && str(o['old']);
     case 'setRotation':
@@ -165,6 +198,7 @@ export interface PdfState {
   removed: Set<string>; // original widget ids
   rects: Map<string, Rect>; // moved/resized widgets and text boxes, by id
   texts: Map<string, TextSpec>;
+  images: Map<string, ImageSpec>;
   rotations: Map<number, number>;
   deletedPages: Set<number>;
 }
@@ -176,6 +210,7 @@ export function emptyPdfState(): PdfState {
     removed: new Set(),
     rects: new Map(),
     texts: new Map(),
+    images: new Map(),
     rotations: new Map(),
     deletedPages: new Set(),
   };
@@ -206,6 +241,12 @@ export function applyOp(s: PdfState, o: PdfOp): void {
       break;
     case 'dropText':
       s.texts.delete(o.spec.id);
+      break;
+    case 'addImage':
+      s.images.set(o.spec.id, o.spec);
+      break;
+    case 'dropImage':
+      s.images.delete(o.spec.id);
       break;
     case 'setText': {
       const t = s.texts.get(o.id);
@@ -238,6 +279,7 @@ export interface PdfStateJson {
   removed: string[];
   rects: [string, Rect][];
   texts: TextSpec[];
+  images?: ImageSpec[];
   rotations: [number, number][];
   deletedPages: number[];
 }
@@ -249,6 +291,7 @@ export function stateToJson(s: PdfState): PdfStateJson {
     removed: [...s.removed],
     rects: [...s.rects],
     texts: [...s.texts.values()],
+    images: [...s.images.values()],
     rotations: [...s.rotations],
     deletedPages: [...s.deletedPages],
   };
@@ -261,6 +304,7 @@ export function stateFromJson(j: PdfStateJson): PdfState {
     removed: new Set(j.removed),
     rects: new Map(j.rects),
     texts: new Map(j.texts.map((t) => [t.id, t])),
+    images: new Map((j.images ?? []).map((i) => [i.id, i])),
     rotations: new Map(j.rotations),
     deletedPages: new Set(j.deletedPages),
   };
@@ -283,6 +327,10 @@ export function pdfEditLabel(o: PdfOp): string {
       return 'Add text';
     case 'dropText':
       return 'Remove text';
+    case 'addImage':
+      return 'Add image';
+    case 'dropImage':
+      return 'Remove image';
     case 'setText':
       return 'Edit text';
     case 'setRotation':

@@ -10,6 +10,7 @@ import {
   type PdfOp,
   type PdfState,
   type Rect,
+  type ImageSpec,
   type TextSpec,
 } from '../../shared/pdf';
 import { createFindBar, domFinder } from '../ui/findBar';
@@ -91,13 +92,17 @@ export function renderPdfView(
   let baseScale = 1.25;
   let zoom = 1;
   let designMode = false;
+  let designBtn: HTMLButtonElement | undefined;
+  const setDesignOn = () => {
+    if (!designMode) designBtn?.click();
+  };
   let placing: Placing = null;
   let placeButtons: HTMLButtonElement[] = [];
   let selected: string | null = null;
   let currentPage = 0;
   let textGen = 0;
   let nextId = 1;
-  for (const k of [...state.added.keys(), ...state.texts.keys()]) nextId = Math.max(nextId, (Number(k.slice(1)) || 0) + 1);
+  for (const k of [...state.added.keys(), ...state.texts.keys(), ...state.images.keys()]) nextId = Math.max(nextId, (Number(k.slice(1)) || 0) + 1);
 
   const scroller = document.createElement('div');
   scroller.className = 'pdf-scroll';
@@ -151,7 +156,7 @@ export function renderPdfView(
   });
   if (!readonly) {
     tb.separator();
-    const design = tb.toggle('Edit form', 'Design mode: select, move, resize and delete fields (Esc to cancel placing)', (on) => setDesign(on), 'edit');
+    const design = (designBtn = tb.toggle('Edit form', 'Design mode: select, move, resize and delete fields (Esc to cancel placing)', (on) => setDesign(on), 'edit'));
     design.classList.add('accent');
     const addGroup = document.createElement('span');
     addGroup.className = 'tb-group add-group';
@@ -174,6 +179,18 @@ export function renderPdfView(
       place('Dropdown', 'Add a dropdown list — then click on the page', 'dropdown', 'dropdown'),
       place('Text', 'Add fixed text, printed into the page — then click on the page', 'freetext', 'text'),
     ];
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.accept = 'image/png,image/jpeg';
+    picker.hidden = true;
+    container.appendChild(picker);
+    picker.addEventListener('change', () => {
+      const f = picker.files?.[0];
+      picker.value = '';
+      if (f) void insertImage(f);
+    });
+    const imgBtn = tb.button('Image', 'Insert a PNG or JPEG image on the current page (you can also paste one)', () => picker.click(), 'image');
+    addGroup.appendChild(imgBtn);
     tb.spacer();
     tb.button('', 'Rotate current page 90°', () => {
       const old = state.rotations.get(currentPage) ?? 0;
@@ -505,8 +522,90 @@ export function renderPdfView(
     rec.overlay.replaceChildren();
     if (state.deletedPages.has(rec.index)) return;
     for (const w of widgetsOf(rec)) rec.overlay.appendChild(makeWidget(rec, w));
+    for (const im of state.images.values()) if (im.page === rec.index) rec.overlay.appendChild(makeImageBox(rec, im));
     for (const t of state.texts.values()) if (t.page === rec.index) rec.overlay.appendChild(makeTextBox(rec, t));
   }
+
+  function makeImageBox(rec: PageRec, im: ImageSpec): HTMLElement {
+    const box = document.createElement('div');
+    box.className = 'pdf-w pdf-image';
+    box.dataset['id'] = im.id;
+    placeEl(box, rec, rectOf(im.id, im.rect));
+    const img = document.createElement('img');
+    img.src = `data:${im.mime};base64,${im.data}`;
+    img.alt = 'Image';
+    img.draggable = false;
+    box.appendChild(img);
+    if (!readonly) {
+      box.addEventListener('pointerdown', (ev) => {
+        if (!designMode) setDesignOn();
+        onDesignDown(rec, im.id, box, ev, false, true);
+      });
+      const h = document.createElement('span');
+      h.className = 'pdf-handle';
+      h.title = 'Drag to resize (Shift: free aspect ratio)';
+      h.addEventListener('pointerdown', (ev) => {
+        if (!designMode) setDesignOn();
+        onDesignDown(rec, im.id, box, ev, true, true);
+      });
+      box.appendChild(h);
+      if (selected === im.id) box.classList.add('selected');
+    }
+    return box;
+  }
+
+  /** Reads a PNG/JPEG (other types are converted to PNG) and places it on the current page. */
+  async function insertImage(blob: Blob): Promise<void> {
+    if (readonly) return;
+    let mime: ImageSpec['mime'] = blob.type === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+    let bmp: ImageBitmap;
+    try {
+      bmp = await createImageBitmap(blob);
+    } catch {
+      onFatal('The image could not be read.');
+      return;
+    }
+    let data: Blob = blob;
+    if (blob.type !== 'image/png' && blob.type !== 'image/jpeg') {
+      const c = document.createElement('canvas');
+      c.width = bmp.width;
+      c.height = bmp.height;
+      c.getContext('2d')!.drawImage(bmp, 0, 0);
+      data = await new Promise<Blob>((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error('convert'))), 'image/png'));
+      mime = 'image/png';
+    }
+    const buf = new Uint8Array(await data.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    const b64 = btoa(bin);
+    const rec = recs.find((r) => r.index === currentPage) ?? recs[0];
+    if (!rec) return;
+    const pw = rec.viewport.width / scale();
+    const ph = rec.viewport.height / scale();
+    const k = Math.min(1, (pw * 0.5) / bmp.width, (ph * 0.5) / bmp.height);
+    const w = bmp.width * k;
+    const h = bmp.height * k;
+    // centre of the visible part of the page, in PDF space
+    const pb = rec.overlay.getBoundingClientRect();
+    const sb = scroller.getBoundingClientRect();
+    const cy = Math.min(Math.max((Math.max(pb.top, sb.top) + Math.min(pb.bottom, sb.bottom)) / 2 - pb.top, 0), pb.height);
+    const [cx0, cy0] = rec.viewport.convertToPdfPoint(pb.width / 2, cy) as [number, number];
+    const id = `i${nextId++}`;
+    if (!designMode) setDesignOn();
+    emit({ op: 'addImage', spec: { id, page: rec.index, rect: [cx0 - w / 2, cy0 - h / 2, cx0 + w / 2, cy0 + h / 2], mime, data: b64 } });
+    select(id);
+  }
+
+  const onPaste = (ev: ClipboardEvent) => {
+    if (readonly) return;
+    const t = ev.target as HTMLElement | null;
+    if (t?.closest?.('input, textarea, [contenteditable]')) return;
+    const file = Array.from(ev.clipboardData?.files ?? []).find((f) => f.type.startsWith('image/'));
+    if (!file) return;
+    ev.preventDefault();
+    void insertImage(file);
+  };
+  document.addEventListener('paste', onPaste);
 
   function makeWidget(rec: PageRec, w: Widget): HTMLElement {
     const box = document.createElement('div');
@@ -675,7 +774,7 @@ export function renderPdfView(
     renderPanel();
   }
 
-  function onDesignDown(rec: PageRec, id: string, box: HTMLElement, ev: PointerEvent, resize = false): void {
+  function onDesignDown(rec: PageRec, id: string, box: HTMLElement, ev: PointerEvent, resize = false, keepAspect = false): void {
     if (!designMode || ev.button !== 0) return;
     ev.preventDefault();
     ev.stopPropagation();
@@ -690,7 +789,11 @@ export function renderPdfView(
     const move = (e: PointerEvent) => {
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
-      if (resize) {
+      if (resize && keepAspect && !e.shiftKey && w > 0 && h > 0) {
+        const k = Math.max(8 / w, 8 / h, Math.max((w + dx) / w, (h + dy) / h));
+        box.style.width = `${w * k}px`;
+        box.style.height = `${h * k}px`;
+      } else if (resize) {
         box.style.width = `${Math.max(8, w + dx)}px`;
         box.style.height = `${Math.max(8, h + dy)}px`;
       } else {
@@ -715,6 +818,8 @@ export function renderPdfView(
     if (added) return rectOf(id, added.rect);
     const text = state.texts.get(id);
     if (text) return rectOf(id, text.rect);
+    const image = state.images.get(id);
+    if (image) return rectOf(id, image.rect);
     for (const r of recs) {
       const w = r.widgets.find((x) => x.id === id);
       if (w) return rectOf(id, w.rect);
@@ -795,7 +900,7 @@ export function renderPdfView(
     const kindName = spec ? spec.kind : orig ? orig.kind : 'text';
     const badge = document.createElement('span');
     badge.className = 'badge';
-    badge.textContent = text ? 'Fixed text' : spec ? `New ${kindName}` : `${kindName} field`;
+    badge.textContent = state.images.has(id) ? 'Image' : text ? 'Fixed text' : spec ? `New ${kindName}` : `${kindName} field`;
     panel.appendChild(badge);
     if (spec) {
       const name = document.createElement('input');
@@ -914,6 +1019,10 @@ export function renderPdfView(
     const orig = recs.flatMap((r) => r.widgets).find((w) => w.id === id);
     if (spec) emit({ op: 'dropField', spec: { ...spec, rect: rectOf(id, spec.rect) } });
     else if (text) emit({ op: 'dropText', spec: { ...text, rect: rectOf(id, text.rect) } });
+    else if (state.images.has(id)) {
+      const im = state.images.get(id)!;
+      emit({ op: 'dropImage', spec: { ...im, rect: rectOf(id, im.rect) } });
+    }
     else if (orig) emit({ op: 'removeWidget', id, name: orig.name });
     select(null);
   }
@@ -971,6 +1080,7 @@ export function renderPdfView(
       textGen++;
       observer?.disconnect();
       document.removeEventListener('keydown', onKey);
+      document.removeEventListener('paste', onPaste);
       finder.close();
       for (const r of recs) r.task?.cancel();
       void loadingTask?.destroy();

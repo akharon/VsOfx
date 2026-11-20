@@ -1,4 +1,5 @@
 import { applyTextEdit, diffText, type CodeModel, type Edit, type TextEdit } from '../../shared/model';
+import { highlightBlocks } from '../code/highlight';
 import { renderMarkdown, setHeading, toggleWrap, togglePrefix, type Selection } from '../code/markdown';
 import { blockToMarkdown } from '../code/mdSerialize';
 import { createFindBar, domFinder, type FindTarget } from '../ui/findBar';
@@ -225,6 +226,23 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
   };
 
   body.addEventListener('input', scheduleSync);
+  // A code block that was edited is highlighted again once the caret leaves it.
+  let editedPre: HTMLElement | null = null;
+  body.addEventListener('input', () => {
+    const n = document.getSelection()?.anchorNode;
+    const pre = (n instanceof Element ? n : n?.parentElement)?.closest<HTMLElement>('pre.hl');
+    if (pre) editedPre = pre;
+  });
+  const onSel = () => {
+    if (!editedPre) return;
+    const n = document.getSelection()?.anchorNode;
+    const el = n instanceof Element ? n : n?.parentElement;
+    if (el && editedPre.contains(el)) return;
+    const pre = editedPre;
+    editedPre = null;
+    if (pre.isConnected) highlightBlocks(pre);
+  };
+  document.addEventListener('selectionchange', onSel);
   body.addEventListener('blur', () => syncVisual());
   body.addEventListener('beforeinput', (ev) => {
     // undo/redo belong to VS Code (the document's edit stack), not to the browser
@@ -859,6 +877,7 @@ export function renderCodeView(container: HTMLElement, model: CodeModel, readonl
     },
     flush,
     dispose() {
+      document.removeEventListener('selectionchange', onSel);
       flush();
       if (vTimer) clearTimeout(vTimer);
       document.removeEventListener('keydown', onCapture, true);

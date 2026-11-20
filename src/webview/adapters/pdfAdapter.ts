@@ -63,7 +63,7 @@ export class PdfAdapter implements FormatAdapter {
   async save(): Promise<Uint8Array> {
     const s = this.state;
     const untouched =
-      s.values.size + s.added.size + s.removed.size + s.rects.size + s.texts.size + s.rotations.size + s.deletedPages.size === 0;
+      s.values.size + s.added.size + s.removed.size + s.rects.size + s.texts.size + s.images.size + s.rotations.size + s.deletedPages.size === 0;
     if (untouched) return this.bytes;
 
     const doc = await PDFDocument.load(this.bytes, { ignoreEncryption: true, updateMetadata: false });
@@ -166,6 +166,13 @@ export class PdfAdapter implements FormatAdapter {
           wordBreaks: [' ', '-'],
         });
       }
+    }
+
+    // 4b. images
+    for (const im of s.images.values()) {
+      const raw = Uint8Array.from(atob(im.data), (c) => c.charCodeAt(0));
+      const img = im.mime === 'image/png' ? await doc.embedPng(raw) : await doc.embedJpg(raw);
+      page(im.page).drawImage(img, box(s.rects.get(im.id) ?? im.rect));
     }
 
     // 5. rotation, then deletion (highest index first)

@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import { attachDiagrams } from './diagrams';
+import { highlightBlocks } from './highlight';
 
 // Raw HTML is disabled: everything in the source is escaped, and markdown-it's link
 // validation drops javascript:/vbscript:/file: URLs. Remote images cannot load under the
@@ -90,6 +91,7 @@ export function renderMarkdown(source: string, target: HTMLElement): void {
     }
   }
   target.replaceChildren(...Array.from(doc.body.childNodes).map((n) => document.importNode(n, true)));
+  highlightBlocks(target);
   attachDiagrams(target);
 }
 

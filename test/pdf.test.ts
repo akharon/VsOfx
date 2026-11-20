@@ -173,4 +173,21 @@ describe('PdfAdapter', () => {
     a.applyEdit(edit({ op: 'deletePage', page: 1 }));
     await expect(a.save()).rejects.toThrow(/at least one page/);
   });
+
+  it('places, moves and removes an image', async () => {
+    // 1x1 red PNG
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==';
+    const spec = { id: 'i1', page: 0, rect: [10, 10, 110, 60] as [number, number, number, number], mime: 'image/png' as const, data: png };
+    expect(isPdfOp({ op: 'addImage', spec })).toBe(true);
+    expect(isPdfOp({ op: 'addImage', spec: { ...spec, data: 'not base64!' } })).toBe(false);
+    expect(isPdfOp({ op: 'addImage', spec: { ...spec, mime: 'image/gif' } })).toBe(false);
+    const a = new PdfAdapter();
+    await a.load(await makeForm(), []);
+    a.applyEdit(edit({ op: 'addImage', spec }));
+    a.applyEdit(edit({ op: 'setRect', id: 'i1', rect: [20, 20, 220, 120], old: spec.rect }));
+    const saved = await a.save();
+    expect(new TextDecoder('latin1').decode(saved)).toMatch(/\/Subtype\s*\/Image/);
+    a.applyEdit(edit({ op: 'dropImage', spec }));
+    expect(reduceOps([{ op: 'addImage', spec }, { op: 'dropImage', spec }]).images.size).toBe(0);
+  });
 });
