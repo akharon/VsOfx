@@ -167,7 +167,7 @@
     "exceljs": "4.4.0",
     "fflate": "0.8.3",
     "mammoth": "1.13.0",
-    "markdown-it": "14.1.0",
+    "markdown-it": "15.0.3",
     "papaparse": "5.5.3",
     "pdfjs-dist": "6.5.438"
   },
