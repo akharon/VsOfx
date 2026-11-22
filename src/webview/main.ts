@@ -270,8 +270,9 @@ function render(model: DocModel, readonly: boolean): void {
       view?.flush?.();
       post({ type: 'command', command: 'save' });
     }, 'save');
-    tb.separator();
   }
+  tb.button('', 'Print (opens a printable copy in your browser)', () => void printDoc(model.type, content), 'print');
+  tb.separator();
   switch (model.type) {
     case 'sheet':
       view = renderSheetView(content, model, readonly, onEdit, tb);
@@ -291,6 +292,57 @@ function render(model: DocModel, readonly: boolean): void {
       break;
     }
   }
+}
+
+/**
+ * Webviews cannot open the print dialog, so the host opens a printable copy in the browser:
+ * a PDF as its current bytes (with unsaved edits), any other document as static HTML.
+ */
+async function printDoc(type: DocModel['type'], content: HTMLElement): Promise<void> {
+  try {
+    view?.flush?.();
+    if (type === 'pdf') {
+      const pdf = await rpc<Uint8Array>({ op: 'save' });
+      post({ type: 'print', pdf }, [pdf.buffer]);
+      return;
+    }
+    post({ type: 'print', html: view?.printHtml?.() ?? printableHtml(content) });
+  } catch (err) {
+    post({ type: 'error', message: `Printing failed: ${message(err)}` });
+  }
+}
+
+/** A static copy of the shown document: no toolbars, editing state or scripts; canvases as images. */
+function printableHtml(content: HTMLElement): string {
+  const clone = content.cloneNode(true) as HTMLElement;
+  const canvases = content.querySelectorAll('canvas');
+  clone.querySelectorAll('canvas').forEach((c, i) => {
+    const img = document.createElement('img');
+    try {
+      img.src = canvases[i]!.toDataURL('image/png');
+    } catch {
+      /* tainted canvas: leave it out */
+    }
+    img.style.cssText = c.style.cssText;
+    c.replaceWith(img);
+  });
+  const imgs = content.querySelectorAll('img');
+  clone.querySelectorAll('img').forEach((img, i) => {
+    if (!img.src.startsWith('blob:')) return;
+    const src = imgs[i]!;
+    const c = document.createElement('canvas');
+    c.width = src.naturalWidth;
+    c.height = src.naturalHeight;
+    try {
+      c.getContext('2d')?.drawImage(src, 0, 0);
+      img.src = c.toDataURL('image/png');
+    } catch {
+      img.remove();
+    }
+  });
+  clone.querySelectorAll('.toolbar, .tablebar, .linkbar, .findbar, .tabs, .formula-bar, .outline, script, input, button').forEach((e) => e.remove());
+  clone.querySelectorAll('[contenteditable]').forEach((e) => e.removeAttribute('contenteditable'));
+  return clone.innerHTML;
 }
 
 /**

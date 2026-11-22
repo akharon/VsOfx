@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as vscode from 'vscode';
 import type { EditorCommand, HostMessage, WebviewMessage } from '../shared/messages';
 import { asBytes } from '../shared/bytes';
@@ -8,6 +9,17 @@ import { OfficeDocument } from './OfficeDocument';
 import { buildWebviewHtml, makeNonce } from './webviewHtml';
 
 const SAVE_TIMEOUT_MS = 30_000;
+/** Printed copies: light paper colours instead of the editor theme, nothing scrolls or clips. */
+const PRINT_CSS = `
+:root { color-scheme: light; }
+body.vsofx-print { background: #fff; color: #000; margin: 0; padding: 16px; font-family: system-ui, sans-serif; overflow: visible; }
+.vsofx-print * { overflow: visible !important; max-height: none !important; }
+.vsofx-print .page { box-shadow: none !important; margin: 0 auto !important; background: #fff !important; color: #000 !important; }
+.vsofx-print .print-title { font-size: 14px; margin: 0 0 8px; }
+.vsofx-print table.print-sheet { border-collapse: collapse; font-size: 11px; }
+.vsofx-print table.print-sheet td { border: 1px solid #999; padding: 2px 4px; white-space: pre-wrap; vertical-align: top; }
+@media print { body.vsofx-print { padding: 0; } .vsofx-print .page, .vsofx-print .slide { break-inside: avoid; } }
+`;
 const MAX_MESSAGE_CHARS = 500;
 /** Text from the webview, shortened for notifications and the log. */
 export const clip = (v: unknown): string => {
@@ -221,6 +233,9 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
         }
         break;
       }
+      case 'print':
+        void this.print(document, msg).catch((err) => void vscode.window.showErrorMessage(`VsOfx: printing failed: ${clip(err instanceof Error ? err.message : err)}`));
+        break;
       case 'securityViolation':
         this.log.appendLine(`Blocked by CSP: ${clip(msg.directive)} ${clip(msg.blockedURI)}`);
         this.violations.push({ directive: clip(msg.directive), blockedURI: clip(msg.blockedURI) });
@@ -229,6 +244,33 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
         this.probeResults.push(msg.results);
         break;
     }
+  }
+
+  /**
+   * Writes a printable copy to the temp folder and opens it in the default browser, whose print
+   * dialog opens by itself (HTML) or from its PDF viewer. The HTML gets a strict CSP: only the
+   * print script runs, images must be inline.
+   */
+  private async print(document: OfficeDocument, msg: Extract<WebviewMessage, { type: 'print' }>): Promise<void> {
+    const dir = vscode.Uri.joinPath(vscode.Uri.file(os.tmpdir()), 'vsofx-print');
+    const base = (document.uri.path.split('/').pop() ?? 'document').replace(/[^\w.\- ]+/g, '_');
+    let file: vscode.Uri;
+    if ('pdf' in msg) {
+      file = vscode.Uri.joinPath(dir, base.toLowerCase().endsWith('.pdf') ? base : `${base}.pdf`);
+      await vscode.workspace.fs.writeFile(file, asBytes(msg.pdf));
+    } else {
+      const css = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.css')));
+      const nonce = makeNonce();
+      const title = base.replace(/[<>&"]/g, '_');
+      const html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'">
+<title>${title}</title><style>${css.replace(/<\/style/gi, '<\\/style')}
+${PRINT_CSS}</style></head><body class="vsofx-print">${String(msg.html)}
+<script nonce="${nonce}">addEventListener('load', () => setTimeout(() => print(), 300));</script></body></html>`;
+      file = vscode.Uri.joinPath(dir, `${base}.html`);
+      await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(html));
+    }
+    await vscode.env.openExternal(file);
   }
 
   private onUserEdit(document: OfficeDocument, origin: vscode.WebviewPanel | undefined, edit: Edit): void {

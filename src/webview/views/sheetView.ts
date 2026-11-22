@@ -4,6 +4,33 @@ import { shiftFormula } from '../../shared/refShift';
 import { createFindBar, type FindTarget } from '../ui/findBar';
 import { createToolbar, type Toolbar } from '../ui/toolbar';
 import type { EditHandler, View } from './types';
+import { escapeHtml } from '../sanitize';
+
+const SAFE_COLOR = /^(#[0-9a-f]{3,8}|rgba?\([\d\s.,%]+\)|[a-z]+)$/i;
+
+/** The used range of a sheet as a plain table (the grid on screen may show only some rows). */
+export function sheetPrintHtml(s: SheetData): string {
+  const cols = s.rows.reduce((n, r) => Math.max(n, r.length), 0);
+  const body = s.rows
+    .map((row) => {
+      const tds = Array.from({ length: cols }, (_, c) => {
+        const cell = row[c];
+        const st = cell?.style;
+        const css = [
+          st?.bold ? 'font-weight:bold' : '',
+          st?.italic ? 'font-style:italic' : '',
+          st?.underline ? 'text-decoration:underline' : '',
+          st?.align ? `text-align:${st.align}` : '',
+          st?.color && SAFE_COLOR.test(st.color) ? `color:${st.color}` : '',
+          st?.fill && SAFE_COLOR.test(st.fill) ? `background:${st.fill}` : '',
+        ].filter(Boolean).join(';');
+        return `<td${css ? ` style="${css}"` : ''}>${escapeHtml(cell?.text ?? '')}</td>`;
+      });
+      return `<tr>${tds.join('')}</tr>`;
+    })
+    .join('');
+  return `<h1 class="print-title">${escapeHtml(s.name)}</h1><table class="print-sheet">${body}</table>`;
+}
 
 const ROW_HEIGHT = 22;
 const VIRTUAL_THRESHOLD = 1000; // rows
@@ -1294,6 +1321,7 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
       applyChange(edit, result);
       updateStatus();
     },
+    printHtml: () => sheetPrintHtml(sheet()),
     dispose() {
       finder.close();
       document.removeEventListener('keydown', onFind);

@@ -28,5 +28,8 @@ export type WebviewMessage =
   | { type: 'openLink'; href: string }
   | { type: 'command'; command: EditorCommand }
   | { type: 'status'; text: string } // short text for the VS Code status bar (word count)
+  // printable copy, opened in the system browser (webviews cannot print themselves)
+  | { type: 'print'; html: string }
+  | { type: 'print'; pdf: Uint8Array }
   | { type: 'securityViolation'; directive: string; blockedURI: string }
   | { type: 'probeResult'; results: Record<string, string> };

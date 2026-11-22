@@ -5,6 +5,8 @@ export interface View {
   applyEdit(edit: Edit, result: ApplyResult): void;
   /** Commits input that is still being typed (called before save). */
   flush?(): void;
+  /** Printable HTML when the visible DOM is not the whole document (virtualised sheets). */
+  printHtml?(): string;
   dispose(): void;
 }
 
