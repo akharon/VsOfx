@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.4.0 (unreleased)
+## 1.4.0 (2026-11-22)
 - Word and Writer: the page is one editing area. Select across paragraphs and type or delete; Backspace/Delete join paragraphs; Enter splits; pasting several lines makes several paragraphs. Each action is one undo step.
 - Spreadsheets: Sum, Average and Count of the selected cells next to the sheet tabs.
 - Toolbar: buttons that do not fit move into a "More" menu instead of wrapping.

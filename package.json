@@ -2,7 +2,7 @@
   "name": "vsofx",
   "displayName": "VsOfx",
   "description": "View and edit Office documents (.docx .xlsx .pptx .odt .ods .odp .odg), CSV tables and PDF forms in VS Code. Sandboxed, no network.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "vsofx",
   "license": "MIT",
   "icon": "media/icon.png",

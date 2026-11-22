@@ -1,6 +1,6 @@
 # VsOfx – Architecture Documentation (arc42)
 
-Status: as built in 1.3.0 (2026-11-22). Decisions marked **(planned)** belong to Phase 9 in [plan.md](plan.md) and are not implemented yet.
+Status: as built in 1.4.0 (2026-11-22). Decisions marked **(planned)** belong to Phase 9 in [plan.md](plan.md) and are not implemented yet.
 
 ## 1. Introduction and Goals
 
