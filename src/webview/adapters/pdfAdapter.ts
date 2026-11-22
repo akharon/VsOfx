@@ -13,16 +13,10 @@ import type { ApplyResult, DocModel, Edit } from '../../shared/model';
 import { applyOp, emptyPdfState, stateToJson, type FieldSpec, type PdfState, type Rect } from '../../shared/pdf';
 import type { FormatAdapter } from './Adapter';
 
-/** True if the bytes start like a PDF ("%PDF-" within the first KiB). */
-export function isPdf(bytes: Uint8Array): boolean {
-  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
-  return head.includes('%PDF-');
-}
+import { assertPdf, isPdf } from './common';
 
-export function assertPdf(bytes: Uint8Array): void {
-  if (bytes.length === 0) throw new Error('The file is empty.');
-  if (!isPdf(bytes)) throw new Error('This file is not a valid PDF document.');
-}
+export { assertPdf, isPdf };
+
 
 const box = (r: Rect) => ({
   x: Math.min(r[0], r[2]),

@@ -1,6 +1,9 @@
 **
 !dist/host.js
 !dist/webview.js
+!dist/pdf.js
+!dist/worker-sheet.js
+!dist/worker-doc.js
 !dist/webview.css
 !package.json
 !media/icon.png

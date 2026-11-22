@@ -153,7 +153,9 @@ describe('Word formatting: view', () => {
     p.focus();
     p.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
     const click = (title: string) => tb.el.querySelector<HTMLButtonElement>(`[title^="${title}"]`)!.click();
-    click('Heading');
+    const style = tb.el.querySelector<HTMLSelectElement>('select[aria-label="Paragraph style"]')!;
+    style.value = 'h1';
+    style.dispatchEvent(new Event('change'));
     expect(edits[0]).toMatchObject({ kind: 'paragraph', index: 0, fmt: { block: 'h1', runs: [{ t: 'Hello ' }, { t: 'world', b: true }] }, oldFmt: { runs: [{ t: 'Hello ' }, { t: 'world', b: true }] } });
     expect(p.dataset['block']).toBe('h1');
     view.applyEdit(inverseEdit(edits[0]!), {});
@@ -167,7 +169,8 @@ describe('Word formatting: view', () => {
     cols!.value = '4';
     Array.from(bar.querySelectorAll('button')).find((b) => b.textContent === 'Insert')!.click();
     expect(edits.at(-1)).toEqual({ kind: 'table', op: 'insert', table: { id: 1, after: 0, rows: 2, cols: 4 } });
-    expect(root.querySelectorAll('table.ins-table [data-p][contenteditable="true"]').length).toBe(8);
+    expect(root.querySelectorAll('table.ins-table [data-p]').length).toBe(8);
+    expect(root.querySelector('article.page')!.getAttribute('contenteditable')).toBe('true');
     view.applyEdit({ kind: 'table', op: 'remove', table: { id: 1, after: 0, rows: 2, cols: 4 } }, {});
     expect(root.querySelector('table.ins-table')).toBeNull();
     view.dispose();

@@ -1,7 +1,7 @@
 {
   "name": "vsofx",
   "displayName": "VsOfx",
-  "description": "View and edit Office documents (.docx .xlsx .pptx .odt .ods .odp .odg), CSV tables, PDF forms, and Markdown with a live preview in VS Code. Sandboxed, no network.",
+  "description": "View and edit Office documents (.docx .xlsx .pptx .odt .ods .odp .odg), CSV tables and PDF forms in VS Code. Sandboxed, no network.",
   "version": "1.3.0",
   "publisher": "vsofx",
   "license": "MIT",
@@ -41,7 +41,6 @@
     "pdf",
     "pdf-form",
     "csv",
-    "markdown",
     "viewer",
     "editor"
   ],
@@ -90,44 +89,18 @@
             "filenamePattern": "*.tsv"
           }
         ]
-      },
-      {
-        "viewType": "vsofx.dataEditor",
-        "displayName": "VsOfx Markdown Editor (preview)",
-        "priority": "option",
-        "selector": [
-          { "filenamePattern": "*.md" },
-          { "filenamePattern": "*.markdown" }
-        ]
       }
     ],
     "commands": [
       {
-        "command": "vsofx.reopenWithTextEditor",
-        "title": "VsOfx: Reopen with Text Editor"
+        "command": "vsofx.newDocument",
+        "title": "VsOfx: New Document"
       },
       {
-        "command": "vsofx.openInVisualEditor",
-        "title": "VsOfx: Open in Visual Editor",
-        "icon": "$(preview)"
+        "command": "vsofx.reopenWithTextEditor",
+        "title": "VsOfx: Reopen with Text Editor"
       }
     ],
-    "menus": {
-      "editor/title": [
-        {
-          "command": "vsofx.openInVisualEditor",
-          "when": "resourceExtname =~ /^\\.(md|markdown)$/ && activeEditor == workbench.editors.files.textFileEditor",
-          "group": "navigation"
-        }
-      ],
-      "explorer/context": [
-        {
-          "command": "vsofx.openInVisualEditor",
-          "when": "resourceExtname =~ /^\\.(md|markdown)$/",
-          "group": "navigation@9"
-        }
-      ]
-    },
     "configuration": {
       "title": "VsOfx",
       "properties": {
@@ -167,12 +140,10 @@
     "exceljs": "4.4.0",
     "fflate": "0.8.3",
     "mammoth": "1.13.0",
-    "markdown-it": "14.1.0",
     "papaparse": "5.5.3",
     "pdfjs-dist": "6.5.438"
   },
   "devDependencies": {
-    "@types/markdown-it": "14.1.2",
     "@types/mocha": "10.0.10",
     "@types/node": "24.19.2",
     "@types/papaparse": "5.3.16",

@@ -48,6 +48,8 @@ export class OdtAdapter implements FormatAdapter {
   private listKinds = new Map<string, 'ul' | 'ol'>();
   private paraAlign = new Map<string, HAlign>();
   private readonly created = new Set<string>();
+  /** Removed original paragraphs: the detached node and its place (see deleteOriginal). */
+  private readonly removedParas = new Map<number, { unit: Element; parent: Node; prev: Node | null; next: Node | null; tables: number[] }>();
 
   async load(bytes: Uint8Array, edits: Edit[]): Promise<TextModel> {
     this.pkg = openOdf(bytes, MIME_ODT);
@@ -72,9 +74,59 @@ export class OdtAdapter implements FormatAdapter {
       else this.removeParagraph(edit.index);
       return {};
     }
+    if (edit.kind === 'delpara') {
+      if (edit.op === 'remove') this.deleteOriginal(edit.index, edit.to);
+      else this.restoreOriginal(edit.index);
+      return {};
+    }
     if (edit.kind !== 'paragraph') throw new Error('Not a paragraph edit');
     this.editParagraph(edit);
     return {};
+  }
+
+  /**
+   * Takes an original paragraph out of the document but keeps its node (and where it was), so
+   * that restoreOriginal can put it back. A list item / list that only holds it goes with it.
+   */
+  private deleteOriginal(index: number, to: number | undefined): void {
+    const el = this.paras.get(index);
+    if (!el || isCellIndex(index) || isNewParaIndex(index) || this.removedParas.has(index)) throw new Error(`Paragraph ${index} cannot be removed`);
+    for (let a: Node | null = el.parentNode; a; a = a.parentNode) {
+      if (isEl(a, NS.table, 'table-cell')) throw new Error(`Paragraph ${index} is in a table`);
+    }
+    let unit: Element = el;
+    for (;;) {
+      const parent = unit.parentNode as Element | null;
+      if (!parent || !(isEl(parent, NS.text, 'list-item') || isEl(parent, NS.text, 'list'))) break;
+      if (firstEl(parent) !== unit || nextEl(unit)) break;
+      unit = parent;
+    }
+    const parent = unit.parentNode!;
+    const info = { unit, parent, prev: unit.previousSibling, next: unit.nextSibling, tables: [] as number[] };
+    parent.removeChild(unit);
+    if (to !== undefined) {
+      for (const [id, t] of this.tables) {
+        if (t.spec.after === index) {
+          this.tables.set(id, { ...t, spec: { ...t.spec, after: to } });
+          info.tables.push(id);
+        }
+      }
+    }
+    this.removedParas.set(index, info);
+  }
+
+  private restoreOriginal(index: number): void {
+    const info = this.removedParas.get(index);
+    if (!info) throw new Error(`Paragraph ${index} was not removed`);
+    const { unit, parent, prev, next } = info;
+    if (next && next.parentNode === parent) parent.insertBefore(unit, next);
+    else if (prev && prev.parentNode === parent) parent.insertBefore(unit, prev.nextSibling);
+    else parent.appendChild(unit);
+    for (const id of info.tables) {
+      const t = this.tables.get(id);
+      if (t) this.tables.set(id, { ...t, spec: { ...t.spec, after: index } });
+    }
+    this.removedParas.delete(index);
   }
 
   async save(): Promise<Uint8Array> {
@@ -595,6 +647,11 @@ function readStyles(doc: Document): Map<string, InlineStyle> {
     map.set(name, s);
   }
   return map;
+}
+
+function nextEl(n: Node): Element | null {
+  for (let c = n.nextSibling; c; c = c.nextSibling) if (c.nodeType === 1) return c as Element;
+  return null;
 }
 
 function firstEl(n: Node): Element | null {

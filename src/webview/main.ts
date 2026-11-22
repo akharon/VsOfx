@@ -1,25 +1,29 @@
 // Webview entry (UI thread). Third-party parsing is delegated to the worker.
 import './style.css';
 import './code.css';
-import workerBase64 from 'virtual:worker-bytes';
-import pdfWorkerBase64 from 'virtual:pdf-worker-bytes';
-import { fromByteArray, toByteArray } from '../shared/base64';
+import { ownedBytes } from '../shared/bytes';
+import { skeletonHtml, skeletonKind } from '../shared/skeleton';
+import { workerFamily, type WorkerFamily } from './family';
 import type { HostMessage, WebviewMessage } from '../shared/messages';
 import { SAFE_HREF } from '../shared/richtext';
-import type { ApplyResult, DocModel, Edit, SourcePart } from '../shared/model';
-import { onDiagram, setDiagramPoster } from './code/diagrams';
+import type { ApplyResult, DocModel, Edit } from '../shared/model';
 import type { LoadResult, WorkerRequest, WorkerResponse } from './protocol';
 import { createToolbar } from './ui/toolbar';
-import { renderCodeView } from './views/codeView';
-import { renderPdfView } from './views/pdfView';
+import type { PdfChunk } from './pdfChunk';
 import { renderSheetView } from './views/sheetView';
 import { renderSlidesView } from './views/slidesView';
 import { renderTextView } from './views/textView';
 import type { View } from './views/types';
+import { initViewState, patchViewState, setStatusSink, viewState } from './viewState';
 
-declare function acquireVsCodeApi(): { postMessage(msg: WebviewMessage, transfer?: Transferable[]): void };
+declare function acquireVsCodeApi(): {
+  postMessage(msg: WebviewMessage, transfer?: Transferable[]): void;
+  getState(): unknown;
+  setState(s: unknown): void;
+};
 
 const vscode = acquireVsCodeApi();
+initViewState(vscode);
 const app = document.getElementById('app')!;
 
 let worker: Worker | undefined;
@@ -37,7 +41,59 @@ const pending = new Map<number, { resolve(v: unknown): void; reject(e: Error): v
 function post(msg: WebviewMessage, transfer?: Transferable[]): void {
   vscode.postMessage(msg, transfer);
 }
-setDiagramPoster(post);
+
+// ---- status bar text and remembered view (zoom, scroll, active sheet) ----------
+let statusTimer = 0;
+setStatusSink((text) => {
+  clearTimeout(statusTimer);
+  statusTimer = window.setTimeout(() => post({ type: 'status', text }), 200);
+});
+
+let restoring = false;
+const scrolls = new Map<string, { cls: string; top: number; left: number }>();
+let scrollTimer = 0;
+document.addEventListener(
+  'scroll',
+  (ev) => {
+    const t = ev.target;
+    const cls = t instanceof HTMLElement && app.contains(t) ? t.classList[0] : undefined;
+    if (!cls || restoring) return;
+    scrolls.set(cls, { cls, top: Math.round((t as HTMLElement).scrollTop), left: Math.round((t as HTMLElement).scrollLeft) });
+    clearTimeout(scrollTimer);
+    scrollTimer = window.setTimeout(() => patchViewState({ scroll: [...scrolls.values()] }), 300);
+  },
+  true,
+);
+// remember the sheet tab that was clicked (tabs are rebuilt by the view, so count them before it reacts)
+document.addEventListener(
+  'click',
+  (ev) => {
+    const tab = (ev.target as Element | null)?.closest?.('.tabs [role="tab"]');
+    if (!tab || restoring) return;
+    patchViewState({ sheet: Array.from(tab.parentElement?.querySelectorAll('[role="tab"]') ?? []).indexOf(tab) });
+  },
+  true,
+);
+
+/** Brings back the sheet and the scroll positions of the last session of this document. */
+function restoreView(): void {
+  const st = viewState();
+  restoring = true;
+  try {
+    if (typeof st.sheet === 'number' && st.sheet > 0) {
+      app.querySelectorAll<HTMLElement>('.tabs [role="tab"]')[st.sheet]?.click();
+    }
+    for (const s of Array.isArray(st.scroll) ? st.scroll : []) {
+      const target = typeof s?.cls === 'string' && /^[\w-]+$/.test(s.cls) ? app.querySelector<HTMLElement>(`.${s.cls}`) : null;
+      if (!target || typeof s.top !== 'number' || typeof s.left !== 'number') continue;
+      target.scrollTop = s.top;
+      target.scrollLeft = s.left;
+      scrolls.set(s.cls, s);
+    }
+  } finally {
+    window.setTimeout(() => (restoring = false), 50); // scroll events of the restore itself
+  }
+}
 
 // ---- links ---------------------------------------------------------------
 // Links never navigate inside the webview. Ctrl/Cmd+click (or a plain click outside editable text)
@@ -68,19 +124,76 @@ document.addEventListener('mouseover', (ev) => {
 
 // ---- worker --------------------------------------------------------------
 
-function blobWorker(base64: string, options?: WorkerOptions): Worker {
-  const bin = atob(base64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+function blobWorker(source: string, options?: WorkerOptions): Worker {
   // blob: workers inherit this page's CSP, so connect-src 'none' applies to them as well.
-  return new Worker(URL.createObjectURL(new Blob([bytes], { type: 'text/javascript' })), options);
+  return new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })), options);
 }
 
-function startWorker(): Worker {
+// ---- PDF chunk (dist/pdf.js: pdf.js, PDF view, pdf.js worker), loaded on first use -----------
+// The browser hides the nonce attribute after load, but the element's nonce property stays readable.
+const scriptNonce = (document.currentScript as HTMLScriptElement | null)?.nonce ?? '';
+let pdfChunk: Promise<PdfChunk> | undefined;
+
+function loadPdfChunk(): Promise<PdfChunk> {
+  const ready = (globalThis as { vsofxPdf?: PdfChunk }).vsofxPdf;
+  if (ready) return Promise.resolve(ready);
+  pdfChunk ??= new Promise<PdfChunk>((resolve, reject) => {
+    const src = app.dataset['pdfChunk'];
+    if (!src) return reject(new Error('The PDF viewer is not available (no script URL).'));
+    const s = document.createElement('script');
+    s.nonce = scriptNonce;
+    s.src = src;
+    s.onload = () => {
+      const c = (globalThis as { vsofxPdf?: PdfChunk }).vsofxPdf;
+      if (c) resolve(c);
+      else reject(new Error('The PDF viewer did not initialise.'));
+    };
+    s.onerror = () => reject(new Error('The PDF viewer could not be loaded.'));
+    document.head.appendChild(s);
+  }).catch((err) => {
+    pdfChunk = undefined; // allow a retry on the next PDF
+    throw err;
+  });
+  return pdfChunk;
+}
+
+// ---- format worker chunks (dist/worker-sheet.js, dist/worker-doc.js), loaded per family -------
+// They sit next to dist/pdf.js, whose URL the host passes; the PDF worker source is inside that chunk.
+const workerChunks = new Map<WorkerFamily, Promise<string>>();
+
+function loadWorkerSource(family: WorkerFamily): Promise<string> {
+  const global = globalThis as { vsofxWorkers?: Record<string, string> };
+  const ready = global.vsofxWorkers?.[family];
+  if (ready) return Promise.resolve(ready);
+  let p = workerChunks.get(family);
+  if (!p) {
+    p = new Promise<string>((resolve, reject) => {
+      const base = app.dataset['pdfChunk'];
+      if (!base) return reject(new Error('The document worker is not available (no script URL).'));
+      const s = document.createElement('script');
+      s.nonce = scriptNonce;
+      s.src = new URL(`worker-${family}.js`, base).toString();
+      s.onload = () => {
+        const src = global.vsofxWorkers?.[family];
+        if (src) resolve(src);
+        else reject(new Error('The document worker did not initialise.'));
+      };
+      s.onerror = () => reject(new Error('The document worker could not be loaded.'));
+      document.head.appendChild(s);
+    }).catch((err) => {
+      workerChunks.delete(family); // allow a retry
+      throw err;
+    });
+    workerChunks.set(family, p);
+  }
+  return p;
+}
+
+function startWorker(source: string): Worker {
   worker?.terminate();
   for (const p of pending.values()) p.reject(new Error('Worker restarted'));
   pending.clear();
-  const w = blobWorker(workerBase64);
+  const w = blobWorker(source);
   w.addEventListener('message', (ev: MessageEvent<WorkerResponse>) => {
     const res = ev.data;
     const p = pending.get(res.id);
@@ -111,12 +224,11 @@ type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K>
 
 // ---- rendering -----------------------------------------------------------
 
-function showLoading(): void {
-  app.replaceChildren();
-  const d = document.createElement('div');
-  d.className = 'loading';
-  d.textContent = 'Loading…';
-  app.appendChild(d);
+function showLoading(format?: string): void {
+  const kind = skeletonKind(format);
+  // the host's HTML already shows this skeleton: keep it (no restart of the shimmer)
+  if (app.firstElementChild?.classList.contains(`sk-${kind}`)) return;
+  app.innerHTML = skeletonHtml(kind); // static markup, see shared/skeleton.ts
 }
 
 function showError(message: string): void {
@@ -138,7 +250,6 @@ function showError(message: string): void {
 
 function render(model: DocModel, readonly: boolean): void {
   closeView();
-  refreshSource = undefined;
   app.replaceChildren();
   const onEdit = (edit: Edit) => void userEdit(edit);
   const tb = createToolbar();
@@ -171,76 +282,15 @@ function render(model: DocModel, readonly: boolean): void {
     case 'slides':
       view = renderSlidesView(content, model, tb);
       break;
-    case 'code':
-      view = renderCodeView(content, model, readonly, onEdit, tb);
-      break;
     case 'pdf': {
       pdfWorker?.terminate();
-      pdfWorker = blobWorker(pdfWorkerBase64, { type: 'module' });
-      view = renderPdfView(content, model, readonly, onEdit, tb, pdfBytes ?? new Uint8Array(0), pdfWorker, (m) => post({ type: 'error', message: m }));
+      const chunk = (globalThis as { vsofxPdf?: PdfChunk }).vsofxPdf;
+      if (!chunk) throw new Error('The PDF viewer is not loaded.');
+      pdfWorker = blobWorker(chunk.workerSource, { type: 'module' });
+      view = chunk.renderPdfView(content, model, readonly, onEdit, tb, pdfBytes ?? new Uint8Array(0), pdfWorker, (m) => post({ type: 'error', message: m }));
       break;
     }
   }
-  // Markdown has its own (editable) Source mode; every other format gets a read-only one.
-  if (model.type !== 'code') addSourceToggle(tb, content);
-}
-
-// ---- Source view (read-only file content) -----------------------------------
-
-let refreshSource: (() => void) | undefined;
-
-function addSourceToggle(tb: ReturnType<typeof createToolbar>, content: HTMLElement): void {
-  const panel = document.createElement('div');
-  panel.className = 'source-view';
-  panel.hidden = true;
-  const bar = document.createElement('div');
-  bar.className = 'source-bar';
-  const select = document.createElement('select');
-  select.setAttribute('aria-label', 'File part');
-  const note = document.createElement('span');
-  note.className = 'muted';
-  note.textContent = 'Read-only: the file as it would be saved now.';
-  bar.append(select, note);
-  const pre = document.createElement('pre');
-  pre.className = 'source-text';
-  pre.tabIndex = 0;
-  panel.append(bar, pre);
-  content.after(panel);
-
-  let parts: SourcePart[] = [];
-  let on = false;
-  let timer = 0;
-  const show = () => {
-    const p = parts.find((x) => x.name === select.value) ?? parts[0];
-    pre.textContent = p?.text ?? '';
-  };
-  select.addEventListener('change', show);
-  const load = async () => {
-    try {
-      parts = await rpc<SourcePart[]>({ op: 'source' });
-    } catch (err) {
-      parts = [{ name: 'Error', text: message(err) }];
-    }
-    const keep = select.value;
-    select.replaceChildren(...parts.map((p) => new Option(p.name, p.name)));
-    select.hidden = parts.length < 2;
-    if (parts.some((p) => p.name === keep)) select.value = keep;
-    const y = pre.scrollTop;
-    show();
-    pre.scrollTop = y;
-  };
-  refreshSource = () => {
-    if (!on) return;
-    if (timer) clearTimeout(timer);
-    timer = window.setTimeout(() => void load(), 300);
-  };
-  if (!tb.el.querySelector('.tb-spacer')) tb.spacer();
-  tb.toggle('Source', 'Show the file source', (v) => {
-    on = v;
-    content.hidden = v;
-    panel.hidden = !v;
-    if (v) void load();
-  }, 'code');
 }
 
 /**
@@ -261,23 +311,10 @@ function closeView(): void {
 
 async function userEdit(edit: Edit): Promise<void> {
   if (closing || !view) return;
-  if (edit.kind === 'text') {
-    // Text splices are tied to the exact text: the host must see them before any undo/redo
-    // that a key press may trigger next, so they are sent first (the worker check follows).
-    post({ type: 'edit', edit });
-    try {
-      showEdit(edit, await rpc<ApplyResult>({ op: 'apply', edit }));
-    } catch (err) {
-      showError(`The edit could not be applied: ${message(err)}`);
-      post({ type: 'error', message: message(err) });
-    }
-    return;
-  }
   try {
     const result = await rpc<ApplyResult>({ op: 'apply', edit });
     showEdit(edit, result);
     post({ type: 'edit', edit });
-    refreshSource?.();
   } catch (err) {
     showError(`The edit could not be applied: ${message(err)}`);
     post({ type: 'error', message: message(err) });
@@ -301,14 +338,20 @@ async function onInit(msg: Extract<HostMessage, { type: 'init' }>): Promise<void
   loaded = false;
   queued = [];
   closeView();
-  showLoading();
+  showLoading(msg.format);
   try {
-    startWorker();
-    const bytes = toByteArray(msg.bytes); // own buffer, transferred to the worker
-    pdfBytes = msg.format === 'pdf' ? bytes.slice() : undefined;
+    const bytes = ownedBytes(msg.bytes); // own buffer, transferred to the worker (no copy)
+    // the PDF chunk carries the PDF format worker; the other families have their own chunk
+    const family = workerFamily(msg.format);
+    const pdf = family === 'pdf' ? await loadPdfChunk() : undefined;
+    const source = pdf ? pdf.formatWorkerSource : await loadWorkerSource(family);
+    if (gen !== generation) return;
+    startWorker(source);
+    pdfBytes = pdf ? bytes.slice() : undefined;
     const res = await rpc<LoadResult>({ op: 'load', format: msg.format, bytes, edits: msg.edits }, [bytes.buffer]);
     if (gen !== generation) return;
     render(res.model, msg.readonly || res.readonly);
+    restoreView();
     loaded = true;
     const pendingEdits = queued;
     queued = [];
@@ -324,7 +367,6 @@ async function onInit(msg: Extract<HostMessage, { type: 'init' }>): Promise<void
 async function hostEdit(edit: Edit): Promise<void> {
   try {
     showEdit(edit, await rpc<ApplyResult>({ op: 'apply', edit }));
-    refreshSource?.();
   } catch (err) {
     post({ type: 'error', message: message(err) });
   }
@@ -338,7 +380,7 @@ async function onSave(requestId: number): Promise<void> {
   try {
     view?.flush?.(); // its edit reaches the worker before the save request
     const bytes = await rpc<Uint8Array>({ op: 'save' });
-    post({ type: 'saveResult', requestId, bytes: fromByteArray(bytes) });
+    post({ type: 'saveResult', requestId, bytes }, [bytes.buffer]); // handed over, not copied
   } catch (err) {
     post({ type: 'saveError', requestId, message: message(err) });
   }
@@ -356,9 +398,6 @@ window.addEventListener('message', (ev: MessageEvent<HostMessage>) => {
       break;
     case 'requestSave':
       void onSave(msg.requestId);
-      break;
-    case 'diagram':
-      onDiagram(msg.id, typeof msg.html === 'string' ? msg.html : null);
       break;
     case 'probe':
       window.dispatchEvent(new CustomEvent('vsofx-probe')); // handled by dist/probe.js in test builds only

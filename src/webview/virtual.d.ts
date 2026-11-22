@@ -1,11 +1,11 @@
-declare module 'virtual:worker-bytes' {
-  /** dist/worker.js, base64 encoded (inlined by esbuild.mjs). */
-  const base64: string;
-  export default base64;
+declare module 'virtual:worker-source' {
+  /** dist/worker-<family>.raw.js as a JavaScript string (inlined by esbuild.mjs). */
+  const source: string;
+  export default source;
 }
 
-declare module 'virtual:pdf-worker-bytes' {
-  /** pdfjs-dist/build/pdf.worker.min.mjs, base64 encoded (inlined by esbuild.mjs). */
-  const base64: string;
-  export default base64;
+declare module 'virtual:pdf-worker-source' {
+  /** pdfjs-dist/legacy/build/pdf.worker.min.mjs as a JavaScript string (inlined by esbuild.mjs). */
+  const source: string;
+  export default source;
 }

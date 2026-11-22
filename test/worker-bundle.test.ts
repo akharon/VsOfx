@@ -1,4 +1,4 @@
-// Smoke test of the real dist/worker.js (the browser bundle that ships), run in a bare `vm`
+// Smoke test of the real dist/worker-<family>.raw.js (the browser bundles that ship, embedded in dist/worker-*.js and dist/pdf.js), run in a bare `vm`
 // context that has browser-like globals only: no process, require, Buffer. Network entry points are
 // replaced by throwing functions and must never be called. Needs `npm run build` first.
 import fs from 'node:fs';
@@ -11,8 +11,11 @@ import { DocxAdapter } from '../src/webview/adapters/docxAdapter.ts';
 import { isZip } from '../src/webview/adapters/zip.ts';
 import { makeDocx, makeOds, makeOdt, makePptx, makeXlsx } from './helpers/fixtures.ts';
 
-const bundle = path.join(__dirname, '..', 'dist', 'worker.js');
-const built = fs.existsSync(bundle);
+import { workerFamily, type WorkerFamily } from '../src/webview/family.ts';
+
+const dist = path.join(__dirname, '..', 'dist');
+const bundleOf = (family: WorkerFamily) => path.join(dist, `worker-${family}.raw.js`);
+const built = (['sheet', 'doc', 'pdf'] as const).every((f) => fs.existsSync(bundleOf(f)));
 
 interface Reply {
   id: number;
@@ -21,7 +24,7 @@ interface Reply {
   result?: unknown;
 }
 
-function startWorker() {
+function startWorker(family: WorkerFamily) {
   const listeners: ((ev: { data: unknown }) => void)[] = [];
   const replies = new Map<number, (r: Reply) => void>();
   const networkAttempts: string[] = [];
@@ -57,7 +60,7 @@ function startWorker() {
   };
   sandbox['self'] = sandbox;
   const context = vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(bundle, 'utf8'), context, { filename: 'worker.js' });
+  vm.runInContext(fs.readFileSync(bundleOf(family), 'utf8'), context, { filename: `worker-${family}.js` });
   let nextId = 1;
 
   function request(req: Record<string, unknown>, bytes?: Uint8Array): Promise<Reply> {
@@ -87,13 +90,33 @@ function startWorker() {
   };
 }
 
-describe.skipIf(!built)('dist/worker.js in a browser-like sandbox', () => {
-  it('runs without Node globals', () => {
-    expect(startWorker().globals()).toBe('undefined,undefined,undefined,undefined,undefined');
+describe.skipIf(!built)('format workers in a browser-like sandbox', () => {
+  it('run without Node globals', () => {
+    for (const f of ['sheet', 'doc', 'pdf'] as const) {
+      expect(startWorker(f).globals()).toBe('undefined,undefined,undefined,undefined,undefined');
+    }
+  });
+
+  it('each family bundle holds only its own libraries', () => {
+    const libs = (f: WorkerFamily) => {
+      const meta = JSON.parse(fs.readFileSync(path.join(dist, `worker-${f}.meta.json`), 'utf8')) as { inputs: Record<string, unknown> };
+      const has = (lib: string) => Object.keys(meta.inputs).some((p) => p.includes(`node_modules/${lib}/`));
+      return { exceljs: has('exceljs'), mammoth: has('mammoth'), pdfLib: has('@cantoo/pdf-lib') };
+    };
+    expect(libs('sheet')).toEqual({ exceljs: true, mammoth: false, pdfLib: false });
+    expect(libs('doc')).toEqual({ exceljs: false, mammoth: true, pdfLib: false });
+    expect(libs('pdf')).toEqual({ exceljs: false, mammoth: false, pdfLib: true });
+    expect(fs.statSync(bundleOf('doc')).size).toBeLessThan(fs.statSync(bundleOf('sheet')).size / 2);
+  });
+
+  it('rejects a format of another family', async () => {
+    const r = await startWorker('doc').load('xlsx', await makeXlsx('styles'));
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/cannot open xlsx/);
   });
 
   it('xlsx: load, edit, save with exceljs', async () => {
-    const w = startWorker();
+    const w = startWorker('sheet');
     const loaded = await w.load('xlsx', await makeXlsx('styles'));
     expect(loaded.ok, loaded.message).toBe(true);
     const model = (loaded.result as { model: DocModel }).model;
@@ -109,7 +132,7 @@ describe.skipIf(!built)('dist/worker.js in a browser-like sandbox', () => {
   });
 
   it('docx: load with mammoth, edit, save', async () => {
-    const w = startWorker();
+    const w = startWorker('doc');
     const loaded = await w.load('docx', makeDocx('styles'));
     expect(loaded.ok, loaded.message).toBe(true);
     const html = (loaded.result as { model: { html: string } }).model.html;
@@ -121,19 +144,20 @@ describe.skipIf(!built)('dist/worker.js in a browser-like sandbox', () => {
   });
 
   it('pptx, odt and ods load', async () => {
-    const w = startWorker();
+    expect(workerFamily('ods')).toBe('sheet');
+    const w = startWorker('doc');
     const p = await w.load('pptx', makePptx());
     expect((p.result as { model: { slides: unknown[] }; readonly: boolean }).model.slides).toHaveLength(2);
     expect((p.result as { readonly: boolean }).readonly).toBe(true);
     const t = await w.load('odt', makeOdt());
     expect((t.result as { model: { html: string } }).model.html).toContain('Report title');
-    const s = await w.load('ods', makeOds());
+    const s = await startWorker('sheet').load('ods', makeOds());
     expect((s.result as { model: { sheets: unknown[] } }).model.sheets).toHaveLength(2);
     expect(w.networkAttempts).toEqual([]);
   });
 
   it('reports a clear error for files that are not Office packages', async () => {
-    const w = startWorker();
+    const w = startWorker('doc');
     const r = await w.load('docx', new TextEncoder().encode('plain text, not a zip'));
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/not a valid Office document/);

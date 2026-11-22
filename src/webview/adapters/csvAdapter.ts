@@ -1,5 +1,5 @@
 import Papa from 'papaparse';
-import { MAX_COLS, MAX_ROWS, type ApplyResult, type CellView, type DocModel, type Edit, type SheetData } from '../../shared/model';
+import { MAX_COLS, MAX_ROWS, type ApplyResult, type CellView, type DocModel, type Edit, type LinesEdit, type SheetData } from '../../shared/model';
 import type { FormatAdapter } from './Adapter';
 import { decodeText, encodeText, type TextEncodingInfo } from './textCodec';
 
@@ -54,6 +54,10 @@ export class CsvAdapter implements FormatAdapter {
     this.dirty = false;
     for (const e of edits) this.applyEdit(e);
 
+    return { type: 'sheet', sheets: [this.sheetData()] };
+  }
+
+  private sheetData(): SheetData {
     const shown = this.rows.slice(0, MAX_ROWS);
     let colCount = 0;
     for (const r of shown) colCount = Math.max(colCount, r.length);
@@ -64,7 +68,7 @@ export class CsvAdapter implements FormatAdapter {
       for (let r = 0; r < Math.min(shown.length, 200); r++) w = Math.max(w, shown[r]![c]?.length ?? 0);
       widths.push(Math.min(40, Math.max(8, w + 2)));
     }
-    const sheet: SheetData = {
+    return {
       name: this.delimiter === '\t' ? 'TSV' : `CSV (${this.delimiter === ',' ? 'comma' : this.delimiter === ';' ? 'semicolon' : this.delimiter === '|' ? 'pipe' : this.delimiter})`,
       rows: shown.map((r, i) => r.slice(0, MAX_COLS).map((v) => (v === '' ? null : cell(v, i === 0)))),
       rowCount: shown.length,
@@ -73,10 +77,44 @@ export class CsvAdapter implements FormatAdapter {
       colWidths: widths,
       truncated: this.rows.length > MAX_ROWS || colCount > MAX_COLS,
     };
-    return { type: 'sheet', sheets: [sheet] };
+  }
+
+  private applyLines(e: LinesEdit): ApplyResult {
+    const { at, count } = e;
+    if (e.axis === 'row') {
+      if (e.op === 'delete') this.rows.splice(at, count);
+      else {
+        while (this.rows.length < at) this.rows.push([]);
+        this.rows.splice(at, 0, ...Array.from({ length: count }, () => [] as string[]));
+      }
+    } else {
+      for (const row of this.rows) {
+        if (e.op === 'delete') row.splice(at, count);
+        else if (row.length > at) row.splice(at, 0, ...Array<string>(count).fill(''));
+      }
+    }
+    if (e.op === 'insert' && e.cells) {
+      e.cells.forEach((line, i) =>
+        line.forEach((v, j) => {
+          if (v === '') return;
+          const [r, c] = e.axis === 'row' ? [at + i, j] : [j, at + i];
+          while (this.rows.length <= r) this.rows.push([]);
+          const row = this.rows[r]!;
+          while (row.length <= c) row.push('');
+          row[c] = v;
+        }),
+      );
+    }
+    this.originalRowCount = this.rows.length;
+    this.dirty = true;
+    return { sheet: this.sheetData() };
   }
 
   applyEdit(edit: Edit): ApplyResult {
+    if (edit.kind === 'lines') {
+      if (edit.sheet !== 0) throw new Error('A CSV file has only one sheet');
+      return this.applyLines(edit);
+    }
     if (edit.kind !== 'cell') throw new Error('Not a cell edit');
     if (edit.sheet !== 0) throw new Error('A CSV file has only one sheet');
     while (this.rows.length <= edit.row) this.rows.push([]);

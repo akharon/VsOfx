@@ -4,7 +4,6 @@ import { Calc, excelToOdf, FormulaError, odfToExcel, UNSUPPORTED, type Book, typ
 import type { SheetModel, SlidesModel } from '../src/shared/model.ts';
 import { OdpAdapter } from '../src/webview/adapters/odpAdapter.ts';
 import { OdsAdapter } from '../src/webview/adapters/odsAdapter.ts';
-import { prettyXml, sourceParts } from '../src/webview/adapters/source.ts';
 import { XlsxAdapter } from '../src/webview/adapters/xlsxAdapter.ts';
 import { readZip } from '../src/webview/adapters/zip.ts';
 import { makeOdp, makeOdsFormulas, makeXlsx } from './helpers/fixtures.ts';
@@ -125,11 +124,3 @@ describe('OpenDocument presentations and drawings', () => {
   });
 });
 
-describe('source view', () => {
-  it('pretty-prints XML parts, main part first', () => {
-    expect(prettyXml('<a><b>x</b><c/></a>')).toBe('<a>\n  <b>x</b>\n  <c/>\n</a>');
-    const parts = sourceParts('ods', makeOdsFormulas());
-    expect(parts[0]!.name).toBe('content.xml');
-    expect(sourceParts('csv', new TextEncoder().encode('a,b\n'))[0]!.text).toBe('a,b\n');
-  });
-});

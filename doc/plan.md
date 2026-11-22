@@ -2,7 +2,13 @@
 
 See [arch42.md](arch42.md) for architecture, library decisions and the security model.
 
-## Status (2026-11-18)
+## Status (2026-11-22)
+
+Version 1.3.0: Phases 0–8 are implemented (Office, ODF, PDF forms, CSV, Markdown WYSIWYG (later dropped, see below), rich text, tables, alignment, sheet selection/copy/paste, sheet add/remove/rename, column widths, wrap). The `.vsix` is 1.87 MB. **Phase 9 (below) is the current plan.** The phase descriptions after this section are kept as history; the original 0.0.1 status follows.
+**Decision 2026-11-22: Markdown editor dropped.** VsOfx has no Markdown editor or viewer; VS Code's built-in Markdown editor and preview are used. Removed: the `vsofx.dataEditor` option editor, the `text` splice edit, the code view, `markdown-it`, the code highlighter and the diagram relay. All Markdown items in the phases and the backlog below are dropped.
+
+
+### Status of 0.0.1 (2026-11-18)
 
 Phases 0–6 are implemented as version 0.0.1. `npm run check` is green (lint, typecheck, build, bundle scan, 99 unit tests, license check), and `npm run test:integration` passes 7 tests inside a real VS Code (all formats open; fetch, XHR, WebSocket, image, iframe and eval are blocked by the CSP; edit, save and undo for xlsx, docx, odt, ods). `npm run package` produces `vsofx-0.0.1.vsix` (about 0.6 MB).
 
@@ -303,6 +309,108 @@ Next:
 - Page thumbnails, outline/bookmarks, CJK and JPEG2000 support (needs pdf.js CMaps/wasm shipped inside the VSIX).
 - Edit existing page text (hard in PDF; likely never).
 
+---
+
+## Phase 9 – Simple, fast, pleasant (current plan, 2026-11-22)
+
+Aim: the everyday essentials of an office suite, done so well that people enjoy using them, in a VS Code-native, professional look, with a package **≤ 2 MB**. Not a Word/Excel clone. Architecture changes are AD-17 … AD-20 in [arch42.md](arch42.md).
+
+### 9.1 Research summary
+
+**What people actually use.**
+- Microsoft's Word 2003 command telemetry, the only hard data found, puts Paste, Save, Copy, Undo and Bold at the top. Together they are about 32 % of all command use, and Paste alone is over 11 % (15 % in Excel). Change Font Size is #11, and after about the top 10 commands the curve is flat. ([Jensen Harris, "No Distaste for Paste"](https://learn.microsoft.com/en-us/archive/blogs/jensenh/no-distaste-for-paste-why-the-ui-part-7), [Office 2010 usage data](https://learn.microsoft.com/en-us/archive/blogs/office2010/how-does-usage-data-improve-the-office-user-experience))
+- The most frequent actions are cursor movement and Backspace. Reliable caret, selection, Enter and Backspace behaviour therefore matters more than any button.
+- Spreadsheets: no telemetry for individual features was found. Expert lists and Microsoft's own "Home tab" help point to editing, copy/paste, sort, filter, SUM/AutoSum, find, and the Sum/Average/Count status bar. ([Excel status bar](https://support.microsoft.com/en-US/Excel/excel-status-bar-options), [Chandoo poll](https://chandoo.org/wp/?p=5818), [Excel for the web tips](https://eus.prod.support.services.microsoft.com/en-au/office/see-tips-for-excel-for-the-web-109ca6ce-7760-4f7c-a90d-5e7e5d1f8009); weak evidence)
+- An unverified figure says few users use functions beyond SUM or PivotTables. Advanced features go undiscovered because people learn spreadsheets from each other ([arXiv 1808.10642](https://arxiv.org/pdf/1808.10642)).
+
+**What lightweight editors miss.** WordPad's typical complaints are: no table creation, no spell check or word count, and lost headers, footers and comments on save. Notepad added tables in 2025 because people asked for them. ([The Register](https://www.theregister.com/2025/11/24/notepad_tables_support/), [Windows Report](https://windowsreport.com/wordpad-windows-8-1-spell-checker/)) The worst failure is silently losing content the editor cannot show. VsOfx already avoids this (patch, don't regenerate).
+
+**UI guidance.**
+- VS Code says to theme everything with `--vscode-*` tokens, keep things accessible (contrast, ARIA, keyboard), and avoid promotions, wizards and welcome pop-ups ([webview UX](https://code.visualstudio.com/api/ux-guidelines/webviews), [UX overview](https://code.visualstudio.com/api/ux-guidelines/overview), [custom editors](https://code.visualstudio.com/api/extension-guides/custom-editors)).
+- Simple editors (Google Docs, Sheets) keep one row of grouped icons and move what does not fit into a "More" menu. Known bug class to avoid: an empty or stale overflow menu after a resize ([Sheets overflow bug](https://discuss.google.dev/t/sheets-overflow-menu-ellipsis-is-broken-it-hides-menus-and-makes-them-inaccessible/280198)).
+- Notion and Typora use a floating selection toolbar and a "/" insert menu ([Typora 1.14](https://support.typora.io/What's-New-1.14/)).
+- Excel's status bar shows Sum, Average and Count for a selection.
+
+**Competitors (VS Code Marketplace).**
+
+| Extension | Scope | Notes |
+|---|---|---|
+| [Office Viewer](https://marketplace.visualstudio.com/items?itemName=cweijan.vscode-office) | Office, PDF, Markdown, archives, HTTP, … | 1.7 M installs; broad, unfocused |
+| [Excel Viewer](https://marketplace.visualstudio.com/items?itemName=GrapeCity.gc-excelviewer) | xlsx/csv grid | 6.9 M installs, no longer maintained; keeps per-file view state |
+| [Edit CSV](https://marketplace.visualstudio.com/items?itemName=janisdd.vscode-edit-csv) | CSV editing | 2.6 M installs; known save/rename issues, slow on big files |
+| [Rainbow CSV](https://marketplace.visualstudio.com/items?itemName=mechatroner.rainbow-csv) | CSV colouring in the text editor | 25 M installs; light |
+
+What we can offer that they don't: one focused, small, sandboxed editor with VS Code-native save, undo and hot exit, the same toolbar in every format, and editing (not only viewing) for Word, Writer, Excel and Calc.
+
+### 9.2 Principles for every change
+1. **Top-10 first.** Per family, the ten most-used actions must work with one click and with the standard shortcut. Nothing from the long tail gets added until they do.
+2. **Same action, same place.** Same icon, tooltip, shortcut and toolbar group in every format (arch42 §8.2).
+3. **No surprise, no loss.** Every edit is one undo step; untouched content is saved unchanged; if something can't be done, the tooltip says why.
+4. **Pay for size.** Each feature states its bundle cost; the package stays ≤ 2 MB (gate 1.9 MB).
+5. **Calm UI.** No welcome pages, no pop-ups, no settings beyond the two existing ones unless one is needed.
+
+### 9.3 Ideas and feasibility
+
+Value: H/M/L. Effort: S ≈ ≤ 1 day, M ≈ 2–3 days, L ≈ a week. Size: change of the packaged `.vsix`.
+
+| ID | Idea | Value | Effort | Risk | Size | Verdict |
+|---|---|---|---|---|---|---|
+| **P1** | Embed worker sources as string literals, not base64 (AD-17) | H (room for everything else, faster start) | S | low | **−480 KB** | Wave 1 |
+| **P2** | Load pdf.js + PDF view + pdf.js worker as a chunk only for PDFs (AD-17) | H (non-PDF files open faster) | M | medium (start-up path) | ±0 | Wave 1 |
+| **P3** | Package size gate (fail > 1.9 MB) and a size line in the build output | M | S | none | 0 | Wave 1 |
+| **D1** | Word/Writer: one editing surface. Select across paragraphs, Enter splits, Backspace/Delete merges, delete or type over a multi-paragraph selection, paste several lines. New `delpara` edit (AD-18) | **H** (top user request; caret/Backspace are the most frequent actions) | L | medium-high | +5 KB | Wave 1 |
+| **S1** | Sheets: status line with Sum, Average, Count (numeric cells) and Count (all) for the selection | H | S | low | +2 KB | Wave 1 |
+| **T1** | Toolbar overflow: buttons that don't fit go into a "More" (…) menu, order stays stable, never an empty menu (AD-20) | H (split editors, laptops) | M | low | +3 KB | Wave 1 |
+| D2 | Paragraph style drop-down (Normal, Heading 1–3, Quote) instead of the cycling heading button; Word, Writer | H | S | low | +1 KB | Wave 2 |
+| D3 | Shortcuts everywhere: Ctrl+B/I/U, Ctrl+K link, Ctrl+Shift+7/8 lists, Ctrl+Alt+0..3 styles, Ctrl+Shift+V paste as plain text; shown in tooltips; Ctrl+/ shows the list | H | S | low (VS Code chords: test) | +2 KB | Wave 2 |
+| D4 | Underline and strikethrough buttons (Word/Writer already support the runs) | M | S | low | +0.5 KB | Wave 2 |
+| D5 | Word count, sheet/cell position in VS Code's own status bar (host `StatusBarItem`) | M | S | low | +1 KB | Wave 2 |
+| D6 | Remember zoom, active sheet, scroll per file (`vscode.setState`) | M | S | low | +1 KB | Wave 2 |
+| S2 | Sort the selected range or the column A→Z / Z→A (value cells; refuse with a message when it holds formulas or merges) as one `batch` | H | M | medium | +3 KB | Wave 2 |
+| S3 | Insert / delete row and column: CSV and ODS fully; xlsx only when the sheet has no formulas, merges or defined names that would need shifting (else explain) | H | M-L | medium-high | +4 KB | Wave 2 |
+| S4 | AutoSum (Alt+=): writes `=SUM(range)` below/right of the selection; the own formula engine shows the result | M | S | low | +1 KB | Wave 2 |
+| N1 | "VsOfx: New Document" command: blank .docx/.xlsx/.odt/.ods/.csv from the command palette and explorer | M (makes VsOfx a tool, not only a viewer) | M | low | +6 KB | Wave 2 |
+| P4 | Bytes as transferred `Uint8Array` instead of base64 (AD-19) | M (big files) | M | medium (needs integration test) | 0 | Wave 3 |
+| P5 | Per-family worker chunks (sheets: exceljs/papaparse; documents: mammoth; PDF: pdf-lib) | M (start-up) | M | medium | ±0 | Wave 3 |
+| U1 | Loading skeleton instead of "Loading…", clearer read-only banner for pptx/odp/odg | M | S | low | +1 KB | Wave 3 |
+| U2 | Floating selection toolbar (B I U link) in Word/Writer | M | M | medium (focus handling) | +3 KB | Wave 3, only if D3 is not enough |
+| X1 | Slide text editing (pptx/odp) | M | L | high | +10 KB | Later; needs a design note |
+| — | Cut/Copy/Paste **buttons** | Paste is #1, but webviews cannot read the clipboard from a button without a permission prompt | — | — | — | Not doing; Ctrl+C/V/X and the context menu work |
+| — | Spell check | Webviews only have the browser's checker, which is off on purpose (noise in code-like text) | — | — | — | Not doing; maybe a setting later |
+| — | Ribbon, track changes, comments editing, charts, pivots, mail merge, macros, page layout, headers/footers editing, collaboration, AI | Long tail / outside the aim / size | — | — | — | Not doing |
+
+**Size check of the plan:** 1.87 MB − 480 KB (P1) + about 35 KB (all of Wave 1 and Wave 2) ≈ **1.43 MB**, which leaves about 470 KB of headroom under the 1.9 MB gate.
+
+### 9.4 Wave 1 (started 2026-11-22: two Sonnet agents and one Haiku agent)
+
+**Result (2026-11-22):** P1–P3, D1, S1 and T1 are implemented. `npm run check` is green (255 tests in 20 files). The `.vsix` is 1.31 MB (was 1.87 MB): `webview.js` is 2.1 MB instead of 5.0 MB, and pdf.js is in `dist/pdf.js`, loaded only for PDFs. All of this is verified by automated tests only, not yet by hand in VS Code (checklist in the 1.4.0 changelog entry). Known limits of D1: a selection that crosses a table or an image is ignored. Backspace at the start of a list item merges it into the previous block instead of first removing the bullet. A removed paragraph that holds a section break is emptied instead of removed. Toggle buttons in the "More" menu keep `aria-pressed` (should become `menuitemcheckbox`).
+
+Every agent works only in its own files, runs only its own tests, and does not commit. The integrator (main session) then runs `npm run check`, `npm run package`, reviews the diff and reports.
+
+| Agent | Tasks | Files it owns |
+|---|---|---|
+| Sonnet A | P1, P2, P3 | `esbuild.mjs`, `src/webview/main.ts` (worker start-up, PDF case), `src/webview/virtual.d.ts`, `src/host/webviewHtml.ts`, `src/host/OfficeEditorProvider.ts` (only the HTML/URI part), `scripts/package.mjs`, `scripts/check-bundles.mjs`, `.vscodeignore`, `test/worker-bundle.test.ts`, `test/host.test.ts` |
+| Sonnet B | D1 | `src/webview/views/textView.ts`, `src/shared/model.ts` (`delpara` + `isEdit`/`inverseEdit`), `src/webview/adapters/docxAdapter.ts`, `docxWrite.ts`, `odtAdapter.ts`, `src/host/OfficeEditorProvider.ts` (only `editLabel`), `src/webview/code.css` (`.page` rules), new `test/singleSurface.test.ts` |
+| Haiku C | S1, T1 | `src/webview/views/sheetView.ts` (status line only), `src/webview/ui/toolbar.ts`, `src/webview/style.css`, `test/toolbar.test.ts`, new `test/sheetStatus.test.ts` |
+
+**Done when (Wave 1):**
+- P1–P3: `npm run package` reports the size and the `.vsix` is ≤ 1.5 MB. A PDF still opens, renders and saves. A non-PDF document does not load the PDF chunk. The CSP is unchanged.
+- D1: in jsdom tests, for Word and Writer: select from paragraph 2 into paragraph 4 and type "x" → one undo step that leaves paragraph 2 = prefix + "x" + suffix of paragraph 4, with 3 and 4 removed; undo restores all three. Backspace at the start of a paragraph joins it to the one before; Delete at the end joins the next one. Enter in the middle splits. Pasting 3 lines makes 3 paragraphs. Save + reload shows the result in docx and odt. Existing textView tests stay green.
+- S1: selecting 2+ cells shows "Sum … Average … Count …" (numbers only for Sum/Average; formatted like the cells' locale); one cell shows nothing; it updates on edit.
+- T1: at a width where buttons don't fit, a "More" button appears and holds exactly the hidden buttons (same click handlers, titles, pressed state); widening restores them; never an empty menu; keyboard reachable (Enter/Escape/arrows).
+
+### 9.5 Wave 2 and 3
+Wave 2: D2, D3, D4, D5, D6, S2, S3, S4, N1, in this order (cheap, high-value first). Wave 3: P4, P5, U1, then decide on U2. Each item gets its "Done when" line before work starts.
+
+Done (Wave 3): P4, P5, U1; U2 skipped (D3 shortcuts are enough for now).
+- P4: init and save messages carry `Uint8Array` (`shared/bytes.ts` `asBytes`/`ownedBytes`); main thread -> worker transfers; worker -> main thread and main thread -> host transfer the saved bytes. Backups unchanged (host-side `OfficeDocument.serialize`). Test: `test/transfer.test.ts`. Not verified inside VS Code by hand: the integration suite has not been run for this change.
+- P5 (measured with esbuild metafiles, minified): single worker 1942 KiB (webview.js 2020 KiB with it embedded) -> webview.js 71 KiB; worker per family: sheet 1078 KiB (exceljs 923), doc 378 KiB, pdf 593 KiB. gzip of all shipped chunks about 1237 KB -> 1287 KB (+50 KB, +4 %). Worth it: Word/Writer/slides parse 81 % less, spreadsheets 45 % less. Test: `test/worker-bundle.test.ts` (each bundle holds only its libraries). Limit: the sheet worker also holds exceljs for CSV (CSV does not need it).
+- U1: skeleton in the page HTML (`shared/skeleton.ts`, styles in `style.css`), grid for spreadsheets, page otherwise; the error state is unchanged. The pptx/odp/odg read-only banner is unchanged.
+
+Done: S2, S3, S4 (sort as a batch of cell edits; `lines` edit for insert/delete with formula rewrites as cell edits in the same batch, merges refused; AutoSum for xlsx/ods). Limits: see CHANGELOG 1.4.0.
+
+Done: D2, D3, D4, D5 (word count only; sheet stats stay in the sheet view), D6, N1. D2 offers Normal, Heading 1-3 and Quote (no Title). D3 chords: Ctrl+B/I/U/K, Ctrl+Shift+X, Ctrl+Shift+7/8, Ctrl+Alt+0..3 (by key position); not done: Ctrl+Shift+V and the Ctrl+/ list. D4 also fixed mammoth dropping underline on open (`styleMap: u => u`). D6 saves zoom, scroll of scrollable areas (by CSS class) and the active sheet tab through the webview state; a PDF's scroll may not be restored because its pages render late. N1: command palette only, no CSV, no Explorer menu; the host writes a stored (uncompressed) zip itself (`src/host/newDocument.ts`, about 3 KB per file).
+
 ## Milestones
 
 | Version | Content |
@@ -312,9 +420,11 @@ Next:
 | 0.2.0 | + Phase 3: docx view/edit |
 | 0.3.0 | + Phases 4–5: pptx view, odt/ods view/edit |
 | 1.0.0 | + Phase 6: hardened, published |
+| 1.0 – 1.3 | Phases 7–8: toolbar, rich text, PDF forms, CSV, Markdown (dropped again in 1.4.0), tables, alignment, sheet essentials |
+| 1.4.0 | Phase 9 Wave 1: smaller and faster package, one editing surface for Word/Writer, sheet status line, toolbar overflow |
+| 1.5.0 | Phase 9 Wave 2: styles drop-down, shortcuts, sort, insert/delete rows/columns, AutoSum, New Document |
 
 ## Open questions
-- Confirm the project license: MIT (recommended) or a non-commercial license (not OSI open source).
-- Minimum supported VS Code version (`engines.vscode`).
-- Evaluate `docx-preview` (Apache-2.0) as a higher-fidelity alternative to mammoth for viewing (would add `jszip`); decide before Phase 3.
-- Evaluate `@js-preview/*` viewers (license and source availability unverified) before Phases 2–4.
+- `.xls` (binary Excel 97–2003): not supported. Options: a read-only view through an own BIFF reader (large) or "Open with text editor / convert in Excel" (current). Decide before Wave 3.
+- Whether the floating selection toolbar (U2) is wanted after D3 shortcuts are in.
+- Closed: license MIT; `engines.vscode ^1.90`; mammoth kept (docx-preview not needed); `@js-preview/*` not used.

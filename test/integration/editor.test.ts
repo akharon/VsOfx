@@ -186,11 +186,6 @@ describe('VsOfx in VS Code', function () {
     await textEditSave('t.csv', 'a;b\r\n1;2\r\n', VIEW_TYPE, { kind: 'cell', sheet: 0, row: 1, col: 1, value: 'x;y', old: '2' }, 'a;b\r\n1;"x;y"\r\n');
   });
 
-  it('markdown: preview editor, text edit + save', async () => {
-    const DATA = 'vsofx.dataEditor';
-    await textEditSave('t.md', '# Hi\n', DATA, { kind: 'text', at: 4, del: '', ins: ' there' }, '# Hi there\n');
-  });
-
   it('a file that is not an Office package shows the error panel and stays untouched', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vsofx-'));
     const file = path.join(dir, 'fake.docx');

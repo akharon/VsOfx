@@ -7,6 +7,7 @@ import {
   PARA_BASE,
   cellIndex,
   fmtEquals,
+  isAnchorIndex,
   isCellIndex,
   isNewParaIndex,
   normalizeRuns,
@@ -18,6 +19,7 @@ import {
   type Run,
   type TableSpec,
 } from '../../shared/richtext';
+import { reportStatus } from '../viewState';
 import { createFindBar, domFinder } from '../ui/findBar';
 import { addZoom, createToolbar, type IconName, type Toolbar } from '../ui/toolbar';
 import type { EditHandler, View } from './types';
@@ -36,6 +38,22 @@ function computedAlign(el: HTMLElement): HAlign {
   const a = el.style.textAlign || (typeof getComputedStyle === 'function' ? getComputedStyle(el).textAlign : '');
   return a === 'center' ? 'center' : a === 'right' || a === 'end' ? 'right' : a === 'justify' ? 'justify' : 'left';
 }
+
+interface RemovedEl {
+  el: HTMLElement;
+  /** What was taken out of the page: the block, or the list / list item that only held it. */
+  unit: HTMLElement;
+  parent: Node;
+  prev: Node | null;
+  next: Node | null;
+  paras: number[];
+  tables: number[];
+}
+
+/** Entries of the paragraph style drop-down. */
+const STYLES: [BlockKind, string][] = [['p', 'Normal'], ['h1', 'Heading 1'], ['h2', 'Heading 2'], ['h3', 'Heading 3'], ['quote', 'Quote']];
+
+const FLAG_KEYS =['b', 'i', 'u', 's', 'code', 'sup', 'sub'] as const;
 
 /** Formatted runs of an editable block (nested lists and tables are not part of it). */
 export function serializeRuns(el: HTMLElement): Run[] {
@@ -122,6 +140,9 @@ export function renderTextView(
   const blocks = new Map<number, HTMLElement>();
   const tables = new Map<number, { spec: TableSpec; el: HTMLTableElement }>();
   const anchors = new Map<number, number>();
+  /** Removed original paragraphs: the detached element and where it was (for undo). */
+  const removedEls = new Map<number, RemovedEl>();
+  let lastNew = 0; // highest added-paragraph index handed out (ids are never reused)
   let active: HTMLElement | null = null;
   // link editor state (a small bar under the toolbar: window.prompt is not available in webviews)
   let linkRange: Range | null = null;
@@ -133,6 +154,9 @@ export function renderTextView(
   let colsInput!: HTMLInputElement;
   let delTableBtn!: HTMLButtonElement;
   let tableTarget: HTMLElement | null = null;
+  // paragraph style drop-down and the last selection inside the page (the drop-down takes the focus)
+  let styleSelect: HTMLSelectElement | undefined;
+  let savedRange: Range | null = null;
 
   const fmtOf = (el: HTMLElement): ParaFmt => {
     const f: ParaFmt = { runs: serializeRuns(el) };
@@ -157,7 +181,8 @@ export function renderTextView(
       current.set(index, runsText(f.runs));
     } else current.set(index, el.textContent ?? '');
     if (readonly) return;
-    el.setAttribute('contenteditable', rich ? 'true' : 'plaintext-only');
+    // rich text: the page itself is the editing surface (set below); plain text: one host per block
+    if (!rich) el.setAttribute('contenteditable', 'plaintext-only');
     el.setAttribute('spellcheck', 'false');
     el.classList.add('editable');
   };
@@ -169,6 +194,16 @@ export function renderTextView(
   for (const el of Array.from(page.querySelectorAll<HTMLTableElement>('table.ins-table[data-table]'))) {
     const n = (k: string) => Number(el.dataset[k]);
     tables.set(n('table'), { spec: { id: n('table'), after: n('after'), rows: n('rows'), cols: n('cols') }, el });
+  }
+  if (rich) {
+    // one editing surface: blocks that are not editable text (images, unmatched blocks) stay read-only islands
+    page.setAttribute('contenteditable', 'true');
+    page.setAttribute('spellcheck', 'false');
+    for (const el of Array.from(page.querySelectorAll<HTMLElement>('p,h1,h2,h3,h4,h5,h6,li,pre,blockquote,img,table'))) {
+      if (!el.hasAttribute('data-p') && !el.querySelector('[data-p]') && !el.closest('[data-p],[contenteditable="false"]')) {
+        el.setAttribute('contenteditable', 'false');
+      }
+    }
   }
 
   // ---- toolbar: find, zoom, navigation pane, formatting marks, word count ----
@@ -200,15 +235,33 @@ export function renderTextView(
       b.addEventListener('mousedown', (ev) => ev.preventDefault());
       return b;
     };
+    const dd = styleSelect = document.createElement('select');
+    styleSelect.className = 'tb-select';
+    styleSelect.title = 'Paragraph style (Ctrl+Alt+0 Normal, Ctrl+Alt+1..3 Heading 1..3)';
+    styleSelect.setAttribute('aria-label', 'Paragraph style');
+    for (const [v, label] of STYLES) styleSelect.add(new Option(label, v));
+    const other = new Option('Other', 'other');
+    other.disabled = true;
+    styleSelect.add(other);
+    styleSelect.addEventListener('change', () => {
+      const v = dd.value as BlockKind;
+      const sel = window.getSelection();
+      const keep = sel && sel.rangeCount && page.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : savedRange;
+      page.focus?.({ preventScroll: true }); // focusing the page may move the caret: put the selection back
+      if (keep) {
+        sel?.removeAllRanges();
+        sel?.addRange(keep);
+      }
+      setStyle(v);
+    });
+    tb.custom(styleSelect);
     fmtBtn('Bold (Ctrl+B)', 'bold', () => inline('bold'));
     fmtBtn('Italic (Ctrl+I)', 'italic', () => inline('italic'));
+    fmtBtn('Underline (Ctrl+U)', 'underline', () => inline('underline'));
+    fmtBtn('Strikethrough (Ctrl+Shift+X)', 'strike', () => inline('strikeThrough'));
     fmtBtn('Code', 'code', () => toggleWrap('code'));
-    fmtBtn('Heading (repeat to change level)', 'heading', () => {
-      const b = blockOf(active!);
-      setBlock(active!, b === 'h1' ? 'h2' : b === 'h2' ? 'h3' : /^h/.test(b) ? 'p' : 'h1');
-    });
-    fmtBtn('Bulleted list', 'listBullet', () => setBlock(active!, blockOf(active!) === 'ul' ? 'p' : 'ul'));
-    fmtBtn('Numbered list', 'listNumber', () => setBlock(active!, blockOf(active!) === 'ol' ? 'p' : 'ol'));
+    fmtBtn('Bulleted list (Ctrl+Shift+8)', 'listBullet', () => setBlock(active!, blockOf(active!) === 'ul' ? 'p' : 'ul'));
+    fmtBtn('Numbered list (Ctrl+Shift+7)', 'listNumber', () => setBlock(active!, blockOf(active!) === 'ol' ? 'p' : 'ol'));
     fmtBtn('Task (☐ → ☑ → none)', 'checkbox', () => toggleTask(active!));
     fmtBtn('Quote', 'quote', () => setBlock(active!, blockOf(active!) === 'quote' ? 'p' : 'quote'));
     fmtBtn('Link (Ctrl+K)', 'link', () => openLinkBar());
@@ -253,6 +306,7 @@ export function renderTextView(
       if (!b.querySelector(BLOCKS)) words += (b.textContent ?? '').split(/\s+/).filter(Boolean).length;
     }
     counter.textContent = `${words.toLocaleString()} word${words === 1 ? '' : 's'}`;
+    reportStatus(counter.textContent);
     if (navOpen) buildNav();
   }
   refreshStats();
@@ -290,11 +344,52 @@ export function renderTextView(
     if (isCellIndex(Number(el.dataset['p']))) return; // table cells stay paragraphs
     el.dataset['block'] = kind;
     commit(el);
+    syncStyle();
   }
 
-  function inline(cmd: 'bold' | 'italic' | 'underline') {
+  /** Shows the style of the block with the caret in the drop-down. */
+  function syncStyle() {
+    if (!styleSelect) return;
+    const b = active && active.isConnected ? blockOf(active) : 'p';
+    styleSelect.value = STYLES.some(([v]) => v === b) ? b : 'other';
+  }
+
+  /** Applies a paragraph style to the selected blocks (one undo step). */
+  function setStyle(kind: BlockKind) {
+    const s = readSelection();
+    const first = s?.first ?? active;
+    if (!first) return;
+    if (!s || s.first === s.last) {
+      setBlock(first, kind);
+    } else {
+      const list = blockList();
+      for (const b of list.slice(list.indexOf(s.first), list.indexOf(s.last) + 1)) {
+        if (!isCellBlock(b)) b.dataset['block'] = kind;
+      }
+      commitTouched();
+    }
+    syncStyle();
+  }
+
+  function inline(cmd: 'bold' | 'italic' | 'underline' | 'strikeThrough') {
     document.execCommand('styleWithCSS', false, 'false');
     document.execCommand(cmd);
+    // formatting a selection over several blocks changes all of them: report them as one step
+    const s = readSelection();
+    if (s && s.first !== s.last) commitTouched();
+  }
+  function commitTouched() {
+    const sel = window.getSelection();
+    const r = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    const edits: Edit[] = [];
+    for (const b of blockList()) {
+      if (b !== active && !(r && r.intersectsNode(b))) continue;
+      const e = pendingEdit(b);
+      if (e) edits.push(e);
+    }
+    if (edits.length === 0) return;
+    refreshStats();
+    onEdit(edits.length === 1 ? edits[0]! : { kind: 'batch', edits });
   }
 
   /** Range of the current selection if it lies inside the active paragraph. */
@@ -452,6 +547,10 @@ export function renderTextView(
     return sel && sel.rangeCount ? sel.getRangeAt(0) : null;
   }
   function placeCaret(el: HTMLElement, atEnd: boolean) {
+    if (rich) {
+      caretAt(el, atEnd ? Infinity : 0);
+      return;
+    }
     el.focus();
     const r = document.createRange();
     r.selectNodeContents(el);
@@ -460,33 +559,334 @@ export function renderTextView(
     sel?.removeAllRanges();
     sel?.addRange(r);
   }
-  /** Enter: the text after the cursor moves into a new paragraph below. */
-  function splitParagraph(el: HTMLElement) {
-    const r = caretRange();
-    if (!r || !el.contains(r.startContainer)) return;
-    r.deleteContents();
-    const tail = document.createRange();
-    tail.setStart(r.startContainer, r.startOffset);
-    tail.setEnd(el, el.childNodes.length);
-    const moved = tail.extractContents();
-    const holder = document.createElement('div');
-    holder.appendChild(moved);
+
+  // ---- one editing surface (rich text) ----
+  // The browser edits text inside one paragraph by itself. Everything that changes the paragraph
+  // structure (a selection over several paragraphs, Enter, Backspace / Delete at a paragraph edge,
+  // multi-line paste) is done here in `rewrite`: ONE edit (a batch when it is several) per action.
+  // Limits (nothing is changed, the document cannot be corrupted):
+  //  - table cells: no operation crosses into or out of a cell, a cell never gets a second paragraph;
+  //  - a selection / join that has a table or a non-editable block (image) between its ends;
+  //  - paragraphs that contain nested lists or tables (only plain "leaf" paragraphs are rewritten).
+  const blockList = () => Array.from(page.querySelectorAll<HTMLElement>('[data-p]'));
+  const indexOfBlock = (b: HTMLElement) => Number(b.dataset['p']);
+  const isCellBlock = (b: HTMLElement) => !!b.closest('td,th') || isCellIndex(indexOfBlock(b));
+  const isLeaf = (b: HTMLElement) => !b.querySelector('[data-p],table,ul,ol');
+  const blockAt = (node: Node | null): HTMLElement | null => {
+    const e = node && node.nodeType === 1 ? (node as Element) : (node?.parentElement ?? null);
+    const b = e?.closest<HTMLElement>('[data-p]') ?? null;
+    return b && page.contains(b) ? b : null;
+  };
+  const newId = () => {
+    lastNew = Math.max(lastNew, PARA_BASE, ...[...blocks.keys()].filter(isNewParaIndex)) + 1;
+    return lastNew;
+  };
+  /** The paragraph an added paragraph follows (the adapters of .odt do not tell: use the one before it). */
+  const anchorOf = (index: number): number => {
+    const a = anchors.get(index);
+    if (a !== undefined) return a;
+    const list = blockList();
+    const el = blocks.get(index);
+    for (let i = el ? list.indexOf(el) - 1 : -1; i >= 0; i--) {
+      const n = indexOfBlock(list[i]!);
+      if (isAnchorIndex(n)) return n;
+    }
+    return 0;
+  };
+  /** Whether a table or a non-editable block lies between two blocks. */
+  const blocked = (a: HTMLElement, b: HTMLElement) =>
+    Array.from(page.querySelectorAll('table,[contenteditable="false"]')).some(
+      (n) =>
+        !!(a.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+        !!(b.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_PRECEDING) &&
+        !n.contains(a) &&
+        !n.contains(b),
+    );
+  const setRuns = (el: HTMLElement, runs: Run[]) => {
+    el.innerHTML = runsToHtml(runs) || '<br>'; // the placeholder <br> is not content (see serializeRuns)
+  };
+  const styleOf = (r?: Run): Omit<Run, 't'> => {
+    const o: Omit<Run, 't'> = {};
+    if (r) for (const k of FLAG_KEYS) if (r[k]) o[k] = true;
+    return o;
+  };
+  const textRun = (t: string, st: Omit<Run, 't'>): Run[] => (t === '' ? [] : [{ t, ...st }]);
+  /** Block kind of the paragraph that follows `el` after Enter: a heading is followed by text, lists and quotes continue. */
+  const nextKind = (el: HTMLElement): BlockKind | undefined => {
     const kind = blockOf(el);
-    // a heading is followed by normal text; lists and quotes continue
-    const block: BlockKind | undefined = /^h/.test(kind) ? 'p' : kind === 'quote' ? 'quote' : el.dataset['block'] === 'ul' || el.dataset['block'] === 'ol' ? kind : undefined;
-    const fmt: ParaFmt = { runs: serializeRuns(holder) };
-    if (block) fmt.block = block;
-    const ids = [...blocks.keys()].filter(isNewParaIndex);
-    const index = Math.max(PARA_BASE, ...ids) + 1;
-    const after = Number(el.dataset['p']);
-    const first = pendingEdit(el);
-    const created = createParagraph(index, after, fmt);
-    if (!created) return;
-    const add: NewParaEdit = { kind: 'newpara', op: 'insert', index, after, fmt };
-    onEdit(first ? { kind: 'batch', edits: [first, add] } : add);
-    refreshStats();
-    placeCaret(created, false);
+    return /^h/.test(kind) ? 'p' : kind === 'quote' ? 'quote' : el.dataset['block'] === 'ul' || el.dataset['block'] === 'ol' ? kind : undefined;
+  };
+
+  interface Sel {
+    first: HTMLElement;
+    last: HTMLElement;
+    /** Runs of `first` before the selection start / of `last` after its end. */
+    before: Run[];
+    after: Run[];
+    collapsed: boolean;
   }
+  const runsAround = (el: HTMLElement, node: Node, offset: number, side: 'before' | 'after'): Run[] => {
+    const rg = document.createRange();
+    if (side === 'before') {
+      rg.setStart(el, 0);
+      rg.setEnd(node, offset);
+    } else {
+      rg.setStart(node, offset);
+      rg.setEnd(el, el.childNodes.length);
+    }
+    const holder = document.createElement('div');
+    holder.appendChild(rg.cloneContents());
+    return serializeRuns(holder);
+  };
+  function readSelection(): Sel | null {
+    const s = window.getSelection();
+    if (!s || s.rangeCount === 0) return null;
+    const r = s.getRangeAt(0);
+    if (!page.contains(r.commonAncestorContainer)) return null;
+    const inside = blockList().filter((b) => r.intersectsNode(b));
+    const a = blockAt(r.startContainer);
+    const z = blockAt(r.endContainer);
+    const first = a ?? inside[0];
+    const last = z ?? inside[inside.length - 1];
+    if (!first || !last) return null;
+    return {
+      first,
+      last,
+      before: a ? runsAround(a, r.startContainer, r.startOffset, 'before') : [],
+      after: z ? runsAround(z, r.endContainer, r.endOffset, 'after') : [],
+      collapsed: r.collapsed,
+    };
+  }
+  const selBlock = (): HTMLElement | null => {
+    const s = window.getSelection();
+    return s && s.rangeCount && page.contains(s.anchorNode) ? blockAt(s.anchorNode) : null;
+  };
+
+  /** Caret at a text offset of a block (Infinity: the end). */
+  function caretAt(el: HTMLElement, offset: number) {
+    const sel = window.getSelection();
+    if (!sel) return;
+    page.focus?.({ preventScroll: true });
+    const r = document.createRange();
+    let left = offset;
+    let done = false;
+    const walk = (n: Node) => {
+      for (let c = n.firstChild; c && !done; c = c.nextSibling) {
+        if (c.nodeType === 3) {
+          const len = (c.nodeValue ?? '').length;
+          if (left <= len) {
+            r.setStart(c, left);
+            done = true;
+          } else left -= len;
+        } else if (c.nodeType === 1) {
+          const tag = (c as Element).tagName;
+          if (tag === 'UL' || tag === 'OL' || tag === 'TABLE') continue;
+          if (tag === 'BR') {
+            if (left === 0) {
+              r.setStartBefore(c);
+              done = true;
+            } else left -= 1;
+          } else walk(c);
+        }
+      }
+    };
+    walk(el);
+    if (!done) {
+      r.selectNodeContents(el);
+      r.collapse(false);
+    }
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    el.scrollIntoView?.({ block: 'nearest' });
+  }
+
+  /** Takes an original paragraph out of the page, keeping its element so that undo can put it back. */
+  function removeOriginal(index: number, to?: number) {
+    const el = blocks.get(index);
+    if (!el || removedEls.has(index)) return;
+    let unit: HTMLElement = el;
+    while (unit.parentElement && unit.parentElement !== page && /^(LI|UL|OL)$/.test(unit.parentElement.tagName) && unit.parentElement.children.length === 1) {
+      unit = unit.parentElement;
+    }
+    const info: RemovedEl = { el, unit, parent: unit.parentNode!, prev: unit.previousSibling, next: unit.nextSibling, paras: [], tables: [] };
+    if (to !== undefined) {
+      for (const [i, a] of anchors) {
+        if (a === index) {
+          anchors.set(i, to);
+          info.paras.push(i);
+        }
+      }
+      for (const t of tables.values()) {
+        if (t.spec.after === index) {
+          t.spec = { ...t.spec, after: to };
+          info.tables.push(t.spec.id);
+        }
+      }
+    }
+    if (active === el) active = null;
+    unit.remove();
+    blocks.delete(index);
+    current.delete(index);
+    currentFmt.delete(index);
+    removedEls.set(index, info);
+  }
+  function restoreOriginal(index: number, fmt: ParaFmt) {
+    const info = removedEls.get(index);
+    if (!info) return;
+    const { el, unit, parent, prev, next } = info;
+    if (next && next.parentNode === parent) parent.insertBefore(unit, next);
+    else if (prev && prev.parentNode === parent) parent.insertBefore(unit, prev.nextSibling);
+    else parent.appendChild(unit);
+    setRuns(el, fmt.runs);
+    if (fmt.block) el.dataset['block'] = fmt.block;
+    else delete el.dataset['block'];
+    showAlign(el, fmt);
+    blocks.set(index, el);
+    currentFmt.set(index, fmt);
+    current.set(index, runsText(fmt.runs));
+    for (const i of info.paras) if (anchors.has(i)) anchors.set(i, index);
+    for (const id of info.tables) {
+      const t = tables.get(id);
+      if (t) t.spec = { ...t.spec, after: index };
+    }
+    removedEls.delete(index);
+  }
+
+  /**
+   * The central structural edit. The selection runs from block `first` (text before it: `before`)
+   * to block `last` (text after it: `after`); everything in between is replaced by `lines`:
+   * first := before + lines[0] (+ after when there is one line), the lines after the first become new
+   * paragraphs, the last of them followed by `after`; the blocks after `first` up to `last` are removed.
+   */
+  function rewrite(first: HTMLElement, last: HTMLElement, before: Run[], after: Run[], lines: string[]): void {
+    const list = blockList();
+    const i = list.indexOf(first);
+    const j = list.indexOf(last);
+    if (i < 0 || j < i) return;
+    const span = list.slice(i, j + 1);
+    if (span.some(isCellBlock) && (span.length > 1 || lines.length > 1)) return; // never across / into table cells
+    if (!span.every(isLeaf) || (span.length > 1 && blocked(first, last))) return;
+    const edits: Edit[] = [];
+    const rest = span.slice(1);
+    // what the user typed into the other blocks before is reported first (only the active block can be dirty)
+    for (const b of rest) {
+      const e = pendingEdit(b);
+      if (e) edits.push(e);
+    }
+    const multi = lines.length > 1;
+    const st = styleOf(before[before.length - 1] ?? after[0]);
+    setRuns(first, normalizeRuns([...before, ...textRun(lines[0]!, st), ...(multi ? [] : after)]));
+    const head = pendingEdit(first);
+    if (head) edits.push(head);
+    const fi = indexOfBlock(first);
+    for (const b of rest.reverse()) {
+      const bi = indexOfBlock(b);
+      const fmt = currentFmt.get(bi) ?? { runs: [] };
+      if (isNewParaIndex(bi)) {
+        edits.push({ kind: 'newpara', op: 'remove', index: bi, after: anchorOf(bi), fmt });
+        removeParagraph(bi);
+      } else {
+        edits.push({ kind: 'delpara', op: 'remove', index: bi, fmt, to: fi });
+        removeOriginal(bi, fi);
+      }
+    }
+    let caretEl = first;
+    let caretAtText = runsText(before).length + lines[0]!.length;
+    if (multi) {
+      const block = nextKind(first);
+      let anchor = fi;
+      for (let k = 1; k < lines.length; k++) {
+        const text = lines[k]!;
+        const runs = k === lines.length - 1 ? normalizeRuns([...textRun(text, {}), ...after]) : textRun(text, {});
+        const fmt: ParaFmt = { runs };
+        if (block) fmt.block = block;
+        const index = newId();
+        const el = createParagraph(index, anchor, fmt);
+        if (!el) break;
+        edits.push({ kind: 'newpara', op: 'insert', index, after: anchor, fmt });
+        anchor = index;
+        caretEl = el;
+        caretAtText = text.length;
+      }
+    }
+    if (edits.length > 0) {
+      onEdit(edits.length === 1 ? edits[0]! : { kind: 'batch', edits });
+      refreshStats();
+    }
+    active = caretEl;
+    caretAt(caretEl, caretAtText);
+  }
+
+  /** Enter: the text after the cursor (the selection is deleted first) moves into a new paragraph below. */
+  function splitSelection(s: Sel) {
+    if (isCellBlock(s.first)) {
+      commit(s.first); // a table cell holds one paragraph
+      return;
+    }
+    rewrite(s.first, s.last, s.before, s.after, ['', '']);
+  }
+  /** Paste of plain text: the first line at the cursor, further lines as new paragraphs. */
+  function pasteText(s: Sel, text: string) {
+    let lines = text.replace(/\r\n?/g, '\n').split('\n');
+    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop(); // text copied with its final line break
+    if (isCellBlock(s.first) || isCellBlock(s.last)) lines = [lines.join(' ')];
+    rewrite(s.first, s.last, s.before, s.after, lines);
+  }
+  /** Backspace at the start / Delete at the end of a paragraph: joins it with the neighbour. */
+  function join(el: HTMLElement, dir: -1 | 1): boolean {
+    const list = blockList();
+    const other = list[list.indexOf(el) + dir];
+    if (!other) return false;
+    const [a, b] = dir < 0 ? [other, el] : [el, other];
+    if (isCellBlock(a) || isCellBlock(b)) return true; // not across cells: handled (= nothing happens)
+    rewrite(a, b, serializeRuns(a), serializeRuns(b), ['']);
+    return true;
+  }
+  const onBeforeInput = (ev: InputEvent) => {
+    const t = ev.inputType;
+    if (t === 'insertCompositionText' || t === 'insertFromComposition') return;
+    const s = readSelection();
+    if (!s) return;
+    const multi = s.first !== s.last;
+    if (t === 'insertText' || t === 'insertReplacementText') {
+      if (!multi) return; // inside one paragraph the browser does it
+      ev.preventDefault();
+      rewrite(s.first, s.last, s.before, s.after, [(ev.data ?? '').replace(/\r?\n/g, ' ')]);
+    } else if (t === 'insertParagraph') {
+      ev.preventDefault();
+      splitSelection(s);
+    } else if (t === 'insertFromPaste' || t === 'insertFromPasteAsQuotation') {
+      ev.preventDefault();
+      pasteText(s, ev.dataTransfer?.getData('text/plain') ?? ev.data ?? '');
+    } else if (t.startsWith('delete')) {
+      if (!s.collapsed) {
+        if (!multi) return;
+        ev.preventDefault();
+        rewrite(s.first, s.last, s.before, s.after, ['']);
+      } else if (t.endsWith('Backward') && runsText(s.before) === '') {
+        if (join(s.first, -1)) ev.preventDefault();
+      } else if (t.endsWith('Forward') && runsText(s.after) === '') {
+        if (join(s.first, 1)) ev.preventDefault();
+      }
+    }
+  };
+  /** The block with the caret is the active one; the one the caret left is committed. */
+  const onSelectionChange = () => {
+    const s = window.getSelection();
+    if (!s || s.rangeCount === 0 || !page.contains(s.anchorNode)) return;
+    savedRange = s.getRangeAt(0).cloneRange();
+    const el = blockAt(s.anchorNode);
+    if (!el) return;
+    if (el !== active) {
+      const prev = active;
+      active = el;
+      prev?.classList.remove('cur');
+      el.classList.add('cur');
+      if (prev && prev.isConnected) commit(prev);
+    }
+    syncStyle();
+  };
   /** Backspace in an empty added paragraph removes it again. */
   function removeEmpty(el: HTMLElement): boolean {
     const index = Number(el.dataset['p']);
@@ -651,16 +1051,18 @@ export function renderTextView(
   }
 
   const onKeyDown = (ev: KeyboardEvent) => {
-    const el = (ev.target as HTMLElement).closest<HTMLElement>('[data-p]');
+    // one editing surface: the keyboard target is the page, the paragraph is where the caret is
+    const el = (rich ? selBlock() : null) ?? (ev.target as HTMLElement).closest<HTMLElement>('[data-p]');
     if (!el) return;
     const mod = ev.ctrlKey || ev.metaKey;
     if (ev.key === 'Enter' && !ev.shiftKey) {
       ev.preventDefault();
-      if (rich && !isCellIndex(Number(el.dataset['p']))) splitParagraph(el);
+      const s = rich ? readSelection() : null;
+      if (s) splitSelection(s);
       else el.blur();
-    } else if (ev.key === 'Backspace' && rich && !mod && removeEmpty(el)) {
+    } else if (ev.key === 'Backspace' && rich && !mod && readSelection()?.collapsed && removeEmpty(el)) {
       ev.preventDefault();
-    } else if (/^Arrow(Up|Down|Left|Right)$/.test(ev.key) && !ev.shiftKey && !mod && !ev.altKey && moveAcross(el, ev)) {
+    } else if (!rich && /^Arrow(Up|Down|Left|Right)$/.test(ev.key) && !ev.shiftKey && !mod && !ev.altKey && moveAcross(el, ev)) {
       ev.preventDefault();
     } else if (ev.key === 'Enter' && ev.shiftKey && !rich) {
       ev.preventDefault();
@@ -670,11 +1072,21 @@ export function renderTextView(
       if (rich) el.innerHTML = runsToHtml(currentFmt.get(index)?.runs ?? []);
       else el.textContent = current.get(index) ?? '';
       el.blur();
-    } else if (rich && mod && !ev.altKey && /^[biuk]$/i.test(ev.key)) {
+    } else if (rich && mod && !ev.altKey && !ev.shiftKey && /^[biuk]$/i.test(ev.key)) {
       ev.preventDefault();
       const k = ev.key.toLowerCase();
       if (k === 'k') openLinkBar();
       else inline(k === 'b' ? 'bold' : k === 'i' ? 'italic' : 'underline');
+    } else if (rich && mod && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'x') {
+      ev.preventDefault();
+      inline('strikeThrough');
+    } else if (rich && mod && ev.shiftKey && !ev.altKey && (ev.code === 'Digit7' || ev.code === 'Digit8')) {
+      ev.preventDefault();
+      const kind = ev.code === 'Digit7' ? 'ol' : 'ul';
+      setBlock(el, blockOf(el) === kind ? 'p' : kind);
+    } else if (rich && mod && ev.altKey && !ev.shiftKey && /^Digit[0-3]$/.test(ev.code)) {
+      ev.preventDefault(); // by key position: Ctrl+Alt is AltGr on many layouts
+      setStyle((['p', 'h1', 'h2', 'h3'] as const)[Number(ev.code.slice(5))]!);
     }
   };
   const onFocusIn = (ev: FocusEvent) => {
@@ -682,11 +1094,17 @@ export function renderTextView(
     if (el) active = el;
   };
   const onFocusOut = (ev: FocusEvent) => {
-    const el = (ev.target as HTMLElement).closest<HTMLElement>('[data-p]');
-    if (el) commit(el);
+    const el = (ev.target as HTMLElement).closest<HTMLElement>('[data-p]') ?? (rich ? active : null);
+    if (el && el.isConnected) commit(el);
   };
   // only plain text comes in from the clipboard (no foreign markup)
   const onPaste = (ev: ClipboardEvent) => {
+    if (rich) {
+      ev.preventDefault();
+      const s = readSelection();
+      if (s) pasteText(s, ev.clipboardData?.getData('text/plain') ?? '');
+      return;
+    }
     if (!(ev.target as HTMLElement).closest('[data-p]')) return;
     ev.preventDefault();
     const t = (ev.clipboardData?.getData('text/plain') ?? '').replace(/\r?\n/g, ' ');
@@ -738,31 +1156,22 @@ export function renderTextView(
     page.addEventListener('focusout', onFocusOut);
     page.addEventListener('paste', onPaste);
     page.addEventListener('drop', onDrop);
+    if (rich) {
+      page.addEventListener('beforeinput', onBeforeInput);
+      document.addEventListener('selectionchange', onSelectionChange);
+    }
   }
 
   return {
     applyEdit(edit: Edit, _result: ApplyResult) {
-      if (edit.kind === 'table') {
-        if (edit.op === 'insert' && !tables.has(edit.table.id)) createTable(edit.table);
-        else if (edit.op === 'remove') removeTable(edit.table.id);
-        refreshStats();
-        return;
-      }
-      if (edit.kind === 'newpara') {
-        if (edit.op === 'insert' && !blocks.has(edit.index)) createParagraph(edit.index, edit.after, edit.fmt);
-        else if (edit.op === 'remove') removeParagraph(edit.index);
-        refreshStats();
-        return;
-      }
-      if (edit.kind !== 'paragraph') return;
-      const el = blocks.get(edit.index);
-      if (!el) return;
-      applyParagraph(el, edit);
-      refreshStats();
+      applyOne(edit);
     },
     flush,
     dispose() {
       finder.close();
+      reportStatus('');
+      page.removeEventListener('beforeinput', onBeforeInput);
+      document.removeEventListener('selectionchange', onSelectionChange);
       document.removeEventListener('keydown', onCapture, true);
       page.removeEventListener('click', onClick);
       page.removeEventListener('keydown', onKeyDown);
@@ -773,6 +1182,36 @@ export function renderTextView(
     },
   };
 
+  function applyOne(edit: Edit) {
+    if (edit.kind === 'batch') {
+      for (const e of edit.edits) applyOne(e);
+      return;
+    }
+    if (edit.kind === 'table') {
+      if (edit.op === 'insert' && !tables.has(edit.table.id)) createTable(edit.table);
+      else if (edit.op === 'remove') removeTable(edit.table.id);
+      refreshStats();
+      return;
+    }
+    if (edit.kind === 'newpara') {
+      if (edit.op === 'insert' && !blocks.has(edit.index)) createParagraph(edit.index, edit.after, edit.fmt);
+      else if (edit.op === 'remove') removeParagraph(edit.index);
+      refreshStats();
+      return;
+    }
+    if (edit.kind === 'delpara') {
+      if (edit.op === 'remove') removeOriginal(edit.index, edit.to);
+      else restoreOriginal(edit.index, edit.fmt);
+      refreshStats();
+      return;
+    }
+    if (edit.kind !== 'paragraph') return;
+    const el = blocks.get(edit.index);
+    if (!el) return;
+    applyParagraph(el, edit);
+    refreshStats();
+  }
+
   function applyParagraph(el: HTMLElement, edit: ParagraphEdit) {
     if (edit.fmt) {
       if (!fmtEquals(fmtOf(el), edit.fmt)) el.innerHTML = runsToHtml(edit.fmt.runs);
@@ -782,5 +1221,6 @@ export function renderTextView(
       currentFmt.set(edit.index, edit.fmt);
     } else el.textContent = edit.text;
     current.set(edit.index, edit.text);
+    if (el === active) syncStyle();
   }
 }

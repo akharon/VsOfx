@@ -1,5 +1,6 @@
-import type { ApplyResult, CellAlign, CellEdit, CellStyle, CellView, Edit, SheetData, SheetModel } from '../../shared/model';
-import { MAX_COLS, MAX_ROWS, validSheetName } from '../../shared/model';
+import type { ApplyResult, CellAlign, CellEdit, CellStyle, CellView, Edit, LinesEdit, SheetData, SheetModel } from '../../shared/model';
+import { MAX_COLS, MAX_LINES_EDIT, MAX_ROWS, validSheetName } from '../../shared/model';
+import { shiftFormula } from '../../shared/refShift';
 import { createFindBar, type FindTarget } from '../ui/findBar';
 import { createToolbar, type Toolbar } from '../ui/toolbar';
 import type { EditHandler, View } from './types';
@@ -123,6 +124,9 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
   scroller.appendChild(table);
   const tabs = el('div', 'tabs');
   tabs.setAttribute('role', 'tablist');
+  /** Status line at the right end of the tabs bar: Average, Count and Sum of the selection. */
+  const status = el('span', 'sheet-status');
+  status.setAttribute('aria-live', 'polite');
   const formulaBar = el('div', 'formula-bar');
   const nameBox = el('span', 'name-box');
   const fx = el('span', 'fx');
@@ -220,6 +224,320 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
       b.title = 'CSV files have no cell formatting';
     }
   }
+  // ---- toolbar: sort, AutoSum, insert / delete rows and columns ----
+  if (!readonly) {
+    tb.separator();
+    tb.button('', 'Sort A → Z by the active column (the selected cells, or the data around the active cell)', () => sortRange(false), 'sortAsc');
+    tb.button('', 'Sort Z → A by the active column (the selected cells, or the data around the active cell)', () => sortRange(true), 'sortDesc');
+    const sumBtn = tb.button('', 'AutoSum (Alt+=): add up the numbers selected, above or to the left', () => autoSum(), 'sum');
+    if (!model.sheetOps) {
+      sumBtn.disabled = true;
+      sumBtn.title = 'CSV files have no formulas';
+    }
+    tb.button('', 'Insert row above the selection', () => selectionLines('row', 'insert', false), 'rowInsert');
+    tb.button('', 'Delete the selected rows', () => selectionLines('row', 'delete', false), 'rowDelete');
+    tb.button('', 'Insert column left of the selection', () => selectionLines('col', 'insert', false), 'colInsert');
+    tb.button('', 'Delete the selected columns', () => selectionLines('col', 'delete', false), 'colDelete');
+  }
+
+  const truncatedText = () => (sheet().truncated ? `Large sheet: only the first ${MAX_ROWS.toLocaleString()} rows and ${MAX_COLS} columns are shown.` : '');
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Shows a short message in the banner above the grid. */
+  function flash(msg: string) {
+    notice.hidden = false;
+    notice.textContent = msg;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      notice.textContent = truncatedText();
+      notice.hidden = !notice.textContent;
+    }, 5000);
+  }
+
+  const isNum = (r: number, c: number) => numericValue(cellAt(r, c)?.text ?? '') !== undefined;
+  const used = (r: number, c: number) => (cellAt(r, c)?.text ?? '') !== '';
+  const cellRef = (r: number, c: number) => `${columnName(c)}${r + 1}`;
+
+  /** The block of data around a cell (like Excel's current region), or undefined for an empty cell. */
+  function region(r: number, c: number) {
+    if (!used(r, c)) return undefined;
+    const rows = sheet().rowCount;
+    const cols = sheet().colCount;
+    const b = { r1: r, r2: r, c1: c, c2: c };
+    const any = (ra: number, rb: number, ca: number, cb: number) => {
+      for (let i = ra; i <= rb; i++) for (let j = ca; j <= cb; j++) if (used(i, j)) return true;
+      return false;
+    };
+    for (let changed = true; changed; ) {
+      changed = false;
+      const ca = Math.max(0, b.c1 - 1);
+      const cb = Math.min(cols - 1, b.c2 + 1);
+      const ra = Math.max(0, b.r1 - 1);
+      const rb = Math.min(rows - 1, b.r2 + 1);
+      if (b.r1 > 0 && any(b.r1 - 1, b.r1 - 1, ca, cb)) {
+        b.r1--;
+        changed = true;
+      }
+      if (b.r2 < rows - 1 && any(b.r2 + 1, b.r2 + 1, ca, cb)) {
+        b.r2++;
+        changed = true;
+      }
+      if (b.c1 > 0 && any(ra, rb, b.c1 - 1, b.c1 - 1)) {
+        b.c1--;
+        changed = true;
+      }
+      if (b.c2 < cols - 1 && any(ra, rb, b.c2 + 1, b.c2 + 1)) {
+        b.c2++;
+        changed = true;
+      }
+    }
+    return b;
+  }
+
+  /** Writes values into single cells (the changed ones only) as one undo step; the first one is selected. */
+  function putCells(list: { r: number; c: number; value: string }[]) {
+    const edits: CellEdit[] = [];
+    for (const { r, c, value } of list) {
+      const cell = cellAt(r, c);
+      const old = cell?.input ?? cell?.text ?? '';
+      if (value === old) continue;
+      edits.push({ kind: 'cell', sheet: active, row: r, col: c, value, old });
+      setCell(r, c, value === '' ? null : { ...(cell ?? { text: '' }), text: value, input: undefined, formula: undefined });
+    }
+    emitCells(edits);
+    return edits.length;
+  }
+
+  // ---- sort ----
+  function sortRange(desc: boolean) {
+    if (readonly) return;
+    finishEdit(true);
+    const s = sheet();
+    if (s.merges.length) return flash('Sorting is not available for sheets with merged cells.');
+    let g = range();
+    let header = false;
+    const wholeColumn = g.r1 === 0 && g.r2 >= nRows() - 1;
+    if ((g.r1 === g.r2 && g.c1 === g.c2) || wholeColumn) {
+      // a single cell or a whole column stands for the data block around it (sorting one column alone would tear the rows apart)
+      let r = sel.r;
+      if (wholeColumn) while (r < s.rowCount && !used(r, sel.c)) r++;
+      const reg = region(r, sel.c);
+      if (!reg) return flash('Select the cells to sort, or a cell that has data around it.');
+      g = reg;
+      header = true;
+    }
+    // a first row of text above numbers is a header and stays where it is
+    if (header) {
+      let first = g.r2 > g.r1;
+      let numbers = false;
+      for (let c = g.c1; c <= g.c2; c++) {
+        first &&= used(g.r1, c) && !isNum(g.r1, c);
+        numbers ||= g.r2 > g.r1 && isNum(g.r1 + 1, c);
+      }
+      header = first && numbers;
+    }
+    const r1 = g.r1 + (header ? 1 : 0);
+    if (g.r2 <= r1 || (g.r2 - r1 + 1) * (g.c2 - g.c1 + 1) > 100_000) return flash(g.r2 <= r1 ? 'Nothing to sort.' : 'The selection is too large to sort.');
+    const key = Math.min(g.c2, Math.max(g.c1, sel.c));
+    const lines: { vals: string[]; key: string }[] = [];
+    for (let r = r1; r <= g.r2; r++) {
+      const vals: string[] = [];
+      for (let c = g.c1; c <= g.c2; c++) {
+        const cell = cellAt(r, c);
+        if (cell?.formula) return flash('Sorting would break the formulas in the selection: sort values only.');
+        vals.push(cell?.input ?? cell?.text ?? '');
+      }
+      lines.push({ vals, key: cellAt(r, key)?.text ?? '' });
+    }
+    const sign = desc ? -1 : 1;
+    const num = (t: string) => numericValue(t);
+    const sorted = lines
+      .map((l, i) => ({ l, i }))
+      .sort((a, b) => {
+        const ka = a.l.key;
+        const kb = b.l.key;
+        if (ka === '' || kb === '') return ka === kb ? a.i - b.i : ka === '' ? 1 : -1; // empty cells stay last
+        const na = num(ka);
+        const nb = num(kb);
+        let d: number;
+        if (na !== undefined && nb !== undefined) d = na - nb;
+        else if (na !== undefined || nb !== undefined) d = na !== undefined ? -1 : 1; // numbers before text
+        else d = ka.localeCompare(kb, undefined, { sensitivity: 'base' });
+        return d * sign || a.i - b.i;
+      })
+      .map((x) => x.l.vals);
+    const edits = writeBlock(sorted, r1, g.c1);
+    if (!edits.length) return flash('Already sorted.');
+    emitCells(edits);
+    scroller.focus();
+  }
+
+  // ---- AutoSum ----
+  function autoSum() {
+    if (readonly || !model.sheetOps) return;
+    finishEdit(true);
+    const g = range();
+    const out: { r: number; c: number; value: string }[] = [];
+    const sum = (ra: number, ca: number, rb: number, cb: number) => `=SUM(${cellRef(ra, ca)}:${cellRef(rb, cb)})`;
+    if (g.r1 === g.r2 && g.c1 === g.c2) {
+      let r = sel.r - 1;
+      while (r >= 0 && isNum(r, sel.c)) r--;
+      let c = sel.c - 1;
+      while (c >= 0 && isNum(sel.r, c)) c--;
+      if (r < sel.r - 1) out.push({ r: sel.r, c: sel.c, value: sum(r + 1, sel.c, sel.r - 1, sel.c) });
+      else if (c < sel.c - 1) out.push({ r: sel.r, c: sel.c, value: sum(sel.r, c + 1, sel.r, sel.c - 1) });
+    } else if (g.r1 === g.r2) {
+      let any = false;
+      for (let c = g.c1; c <= g.c2; c++) any ||= isNum(g.r1, c);
+      if (any) out.push({ r: g.r1, c: g.c2 + 1, value: sum(g.r1, g.c1, g.r1, g.c2) });
+    } else {
+      const r2 = Math.min(g.r2, Math.max(g.r1, sheet().rowCount - 1));
+      for (let c = g.c1; c <= g.c2; c++) {
+        let any = false;
+        for (let r = g.r1; r <= r2 && !any; r++) any = isNum(r, c);
+        if (any) out.push({ r: r2 + 1, c, value: sum(g.r1, c, r2, c) });
+      }
+    }
+    if (!out.length) return flash('AutoSum needs numbers: select them, or a cell below or right of them.');
+    if (out.some((o) => o.r >= MAX_ROWS || o.c >= MAX_COLS)) return flash('There is no room for the sum at the edge of the sheet.');
+    putCells(out);
+    select(out[0]!.r, out[0]!.c);
+    scroller.focus();
+  }
+
+  // ---- insert / delete rows and columns ----
+  /** Applies a row / column command to the selected rows / columns (`after`: insert behind them, not before). */
+  function selectionLines(axis: 'row' | 'col', op: 'insert' | 'delete', after: boolean) {
+    const g = range();
+    const [from, to] = axis === 'row' ? [g.r1, g.r2] : [g.c1, g.c2];
+    changeLines(axis, op, after ? to + 1 : from, to - from + 1);
+  }
+
+  /** Cell edits that rewrite the formulas pointing at moved cells (the lines edit itself only moves cells). */
+  function formulaFixes(lines: LinesEdit): CellEdit[] {
+    const target = model.sheets[lines.sheet]!.name;
+    const fixes: CellEdit[] = [];
+    model.sheets.forEach((s, si) =>
+      s.rows.forEach((row, r) =>
+        row.forEach((cell, c) => {
+          if (!cell?.formula) return;
+          const next = shiftFormula(cell.formula, { target, home: s.name, axis: lines.axis, at: lines.at, count: lines.count, op: lines.op });
+          if (next === cell.formula) return;
+          let [nr, nc] = [r, c];
+          if (si === lines.sheet) {
+            const i = lines.axis === 'row' ? r : c;
+            const end = lines.at + lines.count;
+            const j = lines.op === 'insert' ? (i >= lines.at ? i + lines.count : i) : i < lines.at ? i : i >= end ? i - lines.count : -1;
+            if (j < 0) return; // in a deleted line
+            if (lines.axis === 'row') nr = j;
+            else nc = j;
+          }
+          fixes.push({ kind: 'cell', sheet: si, row: nr, col: nc, value: '=' + next, old: cell.input ?? '=' + cell.formula });
+        }),
+      ),
+    );
+    return fixes;
+  }
+
+  function changeLines(axis: 'row' | 'col', op: 'insert' | 'delete', at: number, count: number) {
+    if (readonly) return;
+    finishEdit(true);
+    const s = sheet();
+    if (s.merges.length) return flash('Inserting and deleting rows or columns is not available for sheets with merged cells.');
+    if (s.truncated) return flash('Inserting and deleting rows or columns is not available for sheets that are cut off.');
+    const size = axis === 'row' ? s.rowCount : s.colCount;
+    if (at >= size) return flash(op === 'delete' ? 'Nothing to delete: these cells are empty.' : 'There is no data from here on: nothing to move.');
+    count = Math.min(count, op === 'delete' ? size - at : MAX_LINES_EDIT);
+    if (count > MAX_LINES_EDIT) return flash(`Select at most ${MAX_LINES_EDIT} rows or columns.`);
+    if (op === 'insert' && size + count > (axis === 'row' ? MAX_ROWS : MAX_COLS)) return flash('The sheet cannot get any bigger.');
+    const lines: LinesEdit = { kind: 'lines', sheet: active, axis, op, at, count };
+    if (op === 'delete') {
+      lines.cells = [];
+      for (let i = at; i < at + count; i++) {
+        const line: string[] = [];
+        for (let j = 0; j < (axis === 'row' ? s.colCount : s.rowCount); j++) {
+          const cell = axis === 'row' ? cellAt(i, j) : cellAt(j, i);
+          line.push(cell?.input ?? cell?.text ?? '');
+        }
+        while (line.length && line[line.length - 1] === '') line.pop();
+        lines.cells.push(line);
+      }
+    }
+    const fixes = formulaFixes(lines);
+    onEdit(fixes.length ? { kind: 'batch', edits: [lines, ...fixes] } : lines);
+    scroller.focus();
+  }
+
+  // ---- right-click menu on row / column headers ----
+  let menuEl: HTMLElement | undefined;
+  const closeMenu = () => {
+    menuEl?.remove();
+    menuEl = undefined;
+  };
+  const onContext = (ev: MouseEvent) => {
+    if (readonly) return;
+    const th = (ev.target as HTMLElement).closest<HTMLElement>('th.rowhead, th.colhead');
+    if (!th) return;
+    ev.preventDefault();
+    finishEdit(true);
+    closeMenu();
+    const isCol = th.classList.contains('colhead');
+    const idx = Number(isCol ? th.dataset['c'] : th.dataset['r']);
+    const g = range();
+    const wholeCols = g.r1 === 0 && g.r2 >= nRows() - 1;
+    const wholeRows = g.c1 === 0 && g.c2 >= nCols() - 1;
+    if (isCol ? !wholeCols || idx < g.c1 || idx > g.c2 : !wholeRows || idx < g.r1 || idx > g.r2) {
+      sel = isCol ? { r: 0, c: idx } : { r: idx, c: 0 };
+      ext = isCol ? { r: nRows() - 1, c: idx } : { r: idx, c: nCols() - 1 };
+      markSelection();
+    }
+    const items: [string, () => void][] = isCol
+      ? [
+          ['Insert column left', () => selectionLines('col', 'insert', false)],
+          ['Insert column right', () => selectionLines('col', 'insert', true)],
+          ['Delete column', () => selectionLines('col', 'delete', false)],
+          ['Sort A → Z', () => sortRange(false)],
+          ['Sort Z → A', () => sortRange(true)],
+        ]
+      : [
+          ['Insert row above', () => selectionLines('row', 'insert', false)],
+          ['Insert row below', () => selectionLines('row', 'insert', true)],
+          ['Delete row', () => selectionLines('row', 'delete', false)],
+        ];
+    const menu = el('div', 'ctx-menu');
+    menu.setAttribute('role', 'menu');
+    for (const [label, run] of items) {
+      const b = el('button');
+      b.type = 'button';
+      b.setAttribute('role', 'menuitem');
+      b.textContent = label;
+      b.addEventListener('click', () => {
+        closeMenu();
+        run();
+      });
+      menu.appendChild(b);
+    }
+    menu.style.left = `${ev.clientX}px`;
+    menu.style.top = `${ev.clientY}px`;
+    root.appendChild(menu);
+    menuEl = menu;
+    menu.querySelector('button')?.focus();
+  };
+  const onMenuDown = (ev: MouseEvent) => {
+    if (menuEl && !menuEl.contains(ev.target as Node)) closeMenu();
+  };
+  const onMenuKey = (ev: KeyboardEvent) => {
+    if (!menuEl) return;
+    if (ev.key === 'Escape') {
+      closeMenu();
+      scroller.focus();
+    } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const items = Array.from(menuEl.querySelectorAll('button'));
+      const i = items.indexOf(document.activeElement as HTMLButtonElement);
+      items[(i + (ev.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
+    }
+  };
+
   function applyViewOptions() {
     const big = virtual();
     for (const b of [freezeBtn, filterBtn]) {
@@ -312,6 +630,7 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
       });
       tabs.append(add, del);
     }
+    tabs.appendChild(status); // replaceChildren() above removed it
   }
 
   function switchTo(i: number) {
@@ -373,7 +692,7 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
   function renderSheet() {
     const s = sheet();
     notice.hidden = !s.truncated;
-    notice.textContent = s.truncated ? `Large sheet: only the first ${MAX_ROWS.toLocaleString()} rows and ${MAX_COLS} columns are shown.` : '';
+    notice.textContent = truncatedText();
     const cols = nCols();
     colgroup.replaceChildren();
     thead.replaceChildren();
@@ -541,6 +860,38 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
     const g = range();
     nameBox.textContent = `${columnName(sel.c)}${sel.r + 1}` + (g.r1 !== g.r2 || g.c1 !== g.c2 ? `  (${g.r2 - g.r1 + 1}R × ${g.c2 - g.c1 + 1}C)` : '');
     formulaText.textContent = cell?.formula ? `=${cell.formula}` : (cell?.input ?? cell?.text ?? '');
+    updateStatus();
+  }
+
+  /** Cells read per status update at most (a whole-sheet selection is sampled). */
+  const STATUS_MAX_CELLS = 200_000;
+
+  /** Excel-like status line for 2+ selected cells: Average and Sum of the numeric cells, Count of the non-empty ones. */
+  function updateStatus() {
+    const g = range();
+    if (g.r1 === g.r2 && g.c1 === g.c2) {
+      status.textContent = '';
+      return;
+    }
+    let seen = 0;
+    let count = 0;
+    let nums = 0;
+    let sum = 0;
+    scan: for (let r = g.r1; r <= g.r2; r++) {
+      for (let c = g.c1; c <= g.c2; c++) {
+        if (seen++ >= STATUS_MAX_CELLS) break scan;
+        const text = cellAt(r, c)?.text ?? '';
+        if (text === '') continue;
+        count++;
+        const v = numericValue(text);
+        if (v !== undefined) {
+          sum += v;
+          nums++;
+        }
+      }
+    }
+    const fmt = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 10 });
+    status.textContent = nums ? `Average: ${fmt(sum / nums)}   Count: ${count}   Sum: ${fmt(sum)}` : `Count: ${count}`;
   }
 
   function clampPos(r: number, c: number): Pos {
@@ -823,6 +1174,11 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
       markSelection();
       return;
     }
+    if (ev.altKey && !ev.ctrlKey && !ev.metaKey && (ev.key === '=' || ev.key === '+')) {
+      ev.preventDefault();
+      autoSum();
+      return;
+    }
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const moves: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
     const mv = moves[ev.key];
@@ -858,6 +1214,10 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
     }
   };
   document.addEventListener('keydown', onFind);
+  document.addEventListener('keydown', onMenuKey);
+  document.addEventListener('mousedown', onMenuDown);
+  thead.addEventListener('contextmenu', onContext);
+  tbody.addEventListener('contextmenu', onContext);
   document.addEventListener('copy', onCopy);
   document.addEventListener('cut', onCopy);
   document.addEventListener('paste', onPaste);
@@ -878,45 +1238,71 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
   renderSheet();
   markSelection();
 
+  const applyChange = (edit: Edit, result: ApplyResult) => {
+    if (edit.kind === 'sheet') {
+      finishEdit(false);
+      if (edit.op === 'rename') {
+        const s = model.sheets[edit.index];
+        if (s) s.name = edit.name;
+        renderTabs();
+        return;
+      }
+      if (edit.op === 'remove') {
+        model.sheets.splice(edit.index, 1);
+        switchTo(active > edit.index || active >= model.sheets.length ? active - 1 : active);
+        return;
+      }
+      if (result.sheet) model.sheets.splice(edit.index, 0, result.sheet);
+      switchTo(edit.index);
+      return;
+    }
+    if (edit.kind === 'lines') {
+      finishEdit(false);
+      closeMenu();
+      if (result.sheet) model.sheets[edit.sheet] = result.sheet;
+      if (edit.sheet === active) {
+        const top = scroller.scrollTop;
+        renderSheet();
+        scroller.scrollTop = top;
+        sel = clampPos(sel.r, sel.c);
+        ext = clampPos(ext.r, ext.c);
+        markSelection();
+      }
+      for (const o of result.others ?? []) setCell(o.row, o.col, o.cell, o.sheet);
+      return;
+    }
+    if (edit.kind === 'colwidth') {
+      const s = model.sheets[edit.sheet];
+      if (!s) return;
+      while (s.colWidths.length <= edit.col) s.colWidths.push(null);
+      const changed = s.colWidths[edit.col] !== edit.width;
+      s.colWidths[edit.col] = edit.width;
+      if (changed && edit.sheet === active) renderSheet(); // undo / redo
+      return;
+    }
+    if (edit.kind === 'wrap' || edit.kind === 'align') {
+      setCell(edit.row, edit.col, result.cell ?? null, edit.sheet);
+      return;
+    }
+    if (edit.kind !== 'cell') return;
+    setCell(edit.row, edit.col, result.cell ?? null, edit.sheet);
+    for (const o of result.others ?? []) setCell(o.row, o.col, o.cell, o.sheet);
+  };
+
   return {
     applyEdit(edit: Edit, result: ApplyResult) {
-      if (edit.kind === 'sheet') {
-        finishEdit(false);
-        if (edit.op === 'rename') {
-          const s = model.sheets[edit.index];
-          if (s) s.name = edit.name;
-          renderTabs();
-          return;
-        }
-        if (edit.op === 'remove') {
-          model.sheets.splice(edit.index, 1);
-          switchTo(active > edit.index || active >= model.sheets.length ? active - 1 : active);
-          return;
-        }
-        if (result.sheet) model.sheets.splice(edit.index, 0, result.sheet);
-        switchTo(edit.index);
-        return;
-      }
-      if (edit.kind === 'colwidth') {
-        const s = model.sheets[edit.sheet];
-        if (!s) return;
-        while (s.colWidths.length <= edit.col) s.colWidths.push(null);
-        const changed = s.colWidths[edit.col] !== edit.width;
-        s.colWidths[edit.col] = edit.width;
-        if (changed && edit.sheet === active) renderSheet(); // undo / redo
-        return;
-      }
-      if (edit.kind === 'wrap' || edit.kind === 'align') {
-        setCell(edit.row, edit.col, result.cell ?? null, edit.sheet);
-        return;
-      }
-      if (edit.kind !== 'cell') return;
-      setCell(edit.row, edit.col, result.cell ?? null, edit.sheet);
-      for (const o of result.others ?? []) setCell(o.row, o.col, o.cell, o.sheet);
+      applyChange(edit, result);
+      updateStatus();
     },
     dispose() {
       finder.close();
       document.removeEventListener('keydown', onFind);
+      document.removeEventListener('keydown', onMenuKey);
+      document.removeEventListener('mousedown', onMenuDown);
+      thead.removeEventListener('contextmenu', onContext);
+      tbody.removeEventListener('contextmenu', onContext);
+      closeMenu();
+      clearTimeout(flashTimer);
       document.removeEventListener('copy', onCopy);
       document.removeEventListener('cut', onCopy);
       document.removeEventListener('paste', onPaste);
@@ -935,6 +1321,14 @@ export function renderSheetView(container: HTMLElement, model: SheetModel, reado
       if (raf) cancelAnimationFrame(raf);
     },
   };
+}
+
+/** The number a displayed cell text stands for ("1,234.5", "-2", "50%" = 0.5 as in Excel), or undefined for text. */
+export function numericValue(text: string): number | undefined {
+  const t = text.trim();
+  if (!/^-?[\d,]*\d(\.\d+)?%?$/.test(t)) return undefined;
+  const v = Number(t.replace(/[,%]/g, ''));
+  return t.endsWith('%') ? v / 100 : v;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {

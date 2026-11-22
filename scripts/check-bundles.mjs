@@ -21,7 +21,7 @@ const PATTERNS = [
   ['eval(', /\beval\s*\(/g],
   ['new Function', /new\s+Function\b|\bFunction\s*\(\s*["'`]/g],
 ];
-const SCANNED = ['host.js', 'worker.js', 'webview.js']; // probe.js is test-only and never shipped
+const SCANNED = ['host.js', 'worker-sheet.js', 'worker-doc.js', 'pdf.js', 'webview.js']; // probe.js is test-only and never shipped
 const update = process.argv.includes('--update');
 
 let failed = false;

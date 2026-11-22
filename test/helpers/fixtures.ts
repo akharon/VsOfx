@@ -268,3 +268,22 @@ export function makeOdsFormulas(): Uint8Array {
       '</table:table-row></table:table></office:spreadsheet></office:body>',
   );
 }
+
+/** Item / Qty table (b 3, a 10, c 2) with =SUM(B2:B4) in B6 and a styled cell, repeated trailing rows like LibreOffice writes. */
+export function makeOdsData(): Uint8Array {
+  const s = (t: string) => `<table:table-cell office:value-type="string"><text:p>${t}</text:p></table:table-cell>`;
+  const n = (v: number) => `<table:table-cell office:value-type="float" office:value="${v}"><text:p>${v}</text:p></table:table-cell>`;
+  return odf(
+    'application/vnd.oasis.opendocument.spreadsheet',
+    '<office:body><office:spreadsheet><table:table table:name="S">' +
+      '<table:table-column table:number-columns-repeated="2"/>' +
+      `<table:table-row>${s('Item')}${s('Qty')}</table:table-row>` +
+      `<table:table-row>${s('b')}${n(3)}</table:table-row>` +
+      `<table:table-row>${s('a')}${n(10)}</table:table-row>` +
+      `<table:table-row>${s('c')}${n(2)}</table:table-row>` +
+      '<table:table-row><table:table-cell table:number-columns-repeated="2"/></table:table-row>' +
+      '<table:table-row><table:table-cell/><table:table-cell table:formula="of:=SUM([.B2:.B4])" office:value-type="float" office:value="15"><text:p>15</text:p></table:table-cell></table:table-row>' +
+      '<table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="1024"/></table:table-row>' +
+      '</table:table></office:spreadsheet></office:body>',
+  );
+}

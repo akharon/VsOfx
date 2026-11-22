@@ -133,3 +133,148 @@ describe('document toolbar', () => {
     expect(bar.querySelector('.find-status')!.textContent).toBe('1 of 5'); // Title(2), two(1), three(1), Part(1)
   });
 });
+
+/** jsdom has no layout: buttons are 30px wide, separators 1px, the info text and the spacer 0px. Sets the row width and relays out. */
+function fit(tb: ReturnType<typeof createToolbar>, width: number) {
+  const row = tb.el.querySelector<HTMLElement>('.toolbar-row')!;
+  for (const e of Array.from(tb.el.querySelectorAll<HTMLElement>('button, .sep, .info, .tb-spacer'))) {
+    const w = e.classList.contains('sep') ? 1 : e.classList.contains('info') || e.classList.contains('tb-spacer') ? 0 : 30;
+    Object.defineProperty(e, 'offsetWidth', { value: w, configurable: true });
+  }
+  Object.defineProperty(row, 'clientWidth', { value: width, configurable: true });
+  Object.defineProperty(row, 'scrollWidth', {
+    configurable: true,
+    get: () => Array.from(row.children).reduce((sum, c) => sum + (c as HTMLElement).offsetWidth, 0),
+  });
+  tb.relayout();
+}
+
+/** Undo, Redo, Save (pinned), |, Alpha, Wrap (toggle), Last, info, spacer. */
+function overflowToolbar() {
+  const log: string[] = [];
+  const tb = createToolbar();
+  tb.button('', 'Undo', () => log.push('undo'), 'undo');
+  tb.button('', 'Redo', () => log.push('redo'), 'redo');
+  tb.button('', 'Save', () => log.push('save'), 'save');
+  tb.separator();
+  tb.button('', 'Alpha', () => log.push('alpha'), 'bold');
+  tb.toggle('Wrap', 'Wrap text', (on) => log.push(`wrap:${on}`), 'wrap');
+  tb.button('', 'Last', () => log.push('last'), 'table');
+  tb.info();
+  tb.spacer();
+  root.append(tb.el);
+  const row = tb.el.querySelector<HTMLElement>('.toolbar-row')!;
+  const more = tb.el.querySelector<HTMLButtonElement>('.tb-more')!;
+  const menu = tb.el.querySelector<HTMLElement>('.tb-menu')!;
+  const rowTitles = () => Array.from(row.children).filter((c) => c.classList.contains('tb-btn') && c !== more).map((c) => c.getAttribute('title'));
+  const menuTitles = () => Array.from(menu.querySelectorAll('button')).map((b) => b.getAttribute('title'));
+  return { tb, log, row, more, menu, rowTitles, menuTitles };
+}
+
+describe('toolbar overflow menu', () => {
+  it('shows no More button when everything fits', () => {
+    const t = overflowToolbar();
+    fit(t.tb, 400);
+    expect(t.more.hidden).toBe(true);
+    expect(t.menu.children).toHaveLength(0);
+    expect(t.rowTitles()).toEqual(['Undo', 'Redo', 'Save', 'Alpha', 'Wrap text', 'Last']);
+  });
+
+  it('moves the last buttons into the menu, in their order, and shows More', () => {
+    const t = overflowToolbar();
+    fit(t.tb, 160);
+    expect(t.more.hidden).toBe(false);
+    expect(t.more.getAttribute('aria-haspopup')).toBe('menu');
+    expect(t.rowTitles()).toEqual(['Undo', 'Redo', 'Save', 'Alpha']);
+    expect(t.menuTitles()).toEqual(['Wrap text', 'Last']);
+    // icon-only items show their tooltip as text in the menu
+    expect(t.menu.querySelector<HTMLElement>('[title="Last"]')!.dataset['menuLabel']).toBe('Last');
+  });
+
+  it('runs a moved button and closes the menu', () => {
+    const t = overflowToolbar();
+    fit(t.tb, 160);
+    t.more.click();
+    expect(t.menu.hidden).toBe(false);
+    expect(t.more.getAttribute('aria-expanded')).toBe('true');
+    t.menu.querySelector<HTMLButtonElement>('[title="Last"]')!.click();
+    expect(t.log).toEqual(['last']);
+    expect(t.menu.hidden).toBe(true);
+    expect(t.more.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('shows a moved toggle as a menuitemcheckbox with aria-checked, and back as a pressed button', () => {
+    const t = overflowToolbar();
+    fit(t.tb, 160);
+    const wrap = t.menu.querySelector<HTMLButtonElement>('[title="Wrap text"]')!;
+    expect(wrap.getAttribute('role')).toBe('menuitemcheckbox');
+    expect(wrap.hasAttribute('aria-pressed')).toBe(false);
+    expect(wrap.getAttribute('aria-checked')).toBe('false');
+    expect(t.menu.querySelector('[title="Last"]')!.getAttribute('role')).toBe('menuitem');
+    wrap.click();
+    expect(t.log).toEqual(['wrap:true']);
+    expect(wrap.getAttribute('aria-checked')).toBe('true');
+    fit(t.tb, 400); // back in the row, still pressed
+    expect(t.tb.el.querySelector('[title="Wrap text"]')!.hasAttribute('aria-checked')).toBe(false);
+    expect(t.tb.el.querySelector('[title="Wrap text"]')!.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('moves the buttons back in their original order when widened', () => {
+    const t = overflowToolbar();
+    fit(t.tb, 160);
+    fit(t.tb, 400);
+    expect(t.more.hidden).toBe(true);
+    expect(t.menu.children).toHaveLength(0);
+    expect(t.rowTitles()).toEqual(['Undo', 'Redo', 'Save', 'Alpha', 'Wrap text', 'Last']);
+    expect(t.row.querySelector<HTMLElement>('.sep')!.hidden).toBe(false);
+    fit(t.tb, 160); // and narrow again: same items, same order
+    expect(t.menuTitles()).toEqual(['Wrap text', 'Last']);
+  });
+
+  it('never shows an empty menu', () => {
+    const log: string[] = [];
+    const tb = createToolbar();
+    tb.button('', 'Undo', () => log.push('undo'), 'undo');
+    tb.button('', 'Redo', () => log.push('redo'), 'redo');
+    tb.button('', 'Save', () => log.push('save'), 'save');
+    root.append(tb.el);
+    fit(tb, 40); // only pinned buttons, nothing may move
+    const more = tb.el.querySelector<HTMLElement>('.tb-more')!;
+    expect(more.hidden).toBe(true);
+    expect(tb.el.querySelector('.tb-menu')!.children).toHaveLength(0);
+  });
+
+  it('closes on Escape and returns focus to More', () => {
+    const t = overflowToolbar();
+    fit(t.tb, 160);
+    t.more.click();
+    const first = t.menu.querySelector<HTMLButtonElement>('button')!;
+    expect(document.activeElement).toBe(first);
+    first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(t.menu.hidden).toBe(true);
+    expect(document.activeElement).toBe(t.more);
+  });
+
+  it('moves between items with the arrow keys', () => {
+    const t = overflowToolbar();
+    fit(t.tb, 160);
+    t.more.click();
+    const [wrap, last] = Array.from(t.menu.querySelectorAll('button'));
+    expect(document.activeElement).toBe(wrap);
+    t.menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(document.activeElement).toBe(last);
+    t.menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(document.activeElement).toBe(wrap); // wraps around
+    t.menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(document.activeElement).toBe(last);
+  });
+
+  it('closes when clicking outside', () => {
+    const t = overflowToolbar();
+    fit(t.tb, 160);
+    t.more.click();
+    expect(t.menu.hidden).toBe(false);
+    document.body.click();
+    expect(t.menu.hidden).toBe(true);
+  });
+});

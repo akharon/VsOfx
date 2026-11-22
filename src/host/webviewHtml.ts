@@ -1,10 +1,16 @@
+import { skeletonHtml, skeletonKind } from '../shared/skeleton';
+
 export interface WebviewHtmlOptions {
   cspSource: string;
   scriptUri: string;
   styleUri: string;
+  /** dist/pdf.js, loaded by the page on demand when a PDF is opened (nonce-tagged script). */
+  pdfChunkUri?: string;
   /** Extra script (test builds only). */
   probeUri?: string;
   nonce: string;
+  /** Format of the file: picks the loading skeleton (grid for spreadsheets, page otherwise). */
+  format?: string;
 }
 
 /** Content-Security-Policy for the editor webview (doc/arch42.md §8.1). No network, no eval. */
@@ -30,6 +36,8 @@ export function makeNonce(): string {
 
 export function buildWebviewHtml(o: WebviewHtmlOptions): string {
   const probe = o.probeUri ? `\n<script nonce="${o.nonce}" src="${o.probeUri}"></script>` : '';
+  const kind = skeletonKind(o.format);
+  const pdf = o.pdfChunkUri ? ` data-pdf-chunk="${o.pdfChunkUri}"` : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -40,7 +48,7 @@ export function buildWebviewHtml(o: WebviewHtmlOptions): string {
 <title>VsOfx</title>
 </head>
 <body>
-<div id="app" aria-live="polite"><div class="loading">Loading…</div></div>
+<div id="app" aria-live="polite"${pdf} data-skeleton="${kind}">${skeletonHtml(kind)}</div>
 <script nonce="${o.nonce}" src="${o.scriptUri}"></script>${probe}
 </body>
 </html>`;

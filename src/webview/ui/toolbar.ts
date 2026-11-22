@@ -1,11 +1,14 @@
 /**
  * A VS Code-style toolbar above the document: flat icon buttons with tooltips, optional text labels,
  * grouped controls. Icons are inline SVG built with DOM APIs (no icon fonts, no remote resources).
+ * Buttons that do not fit a narrow row move into a "More" menu (see relayout()).
  */
+import { patchViewState, viewState } from '../viewState';
+
 export type IconName = keyof typeof ICONS;
 
 export interface Toolbar {
-  /** Root element; contains the button row and a slot for panels such as the find bar. */
+  /** Root element; contains the button row, the "More" menu and a slot for panels such as the find bar. */
   el: HTMLElement;
   /** Panel slot below the button row. */
   extra: HTMLElement;
@@ -14,10 +17,14 @@ export interface Toolbar {
   /** A button that stays pressed; `onChange` receives the new state. */
   toggle(label: string, title: string, onChange: (on: boolean) => void, icon?: IconName): HTMLButtonElement;
   separator(): void;
+  /** Adds any control (for example a drop-down) to the row; it moves into "More" like the buttons. */
+  custom(node: HTMLElement): void;
   /** Right-aligned status text (word count, page ...). */
   info(): HTMLElement;
   /** Pushes the following controls to the right edge. */
   spacer(): void;
+  /** Moves the items that do not fit into the "More" menu, or back into the row. Runs by itself after changes and on resize. */
+  relayout(): void;
 }
 
 // 16×16 stroke icons (codicon-like, drawn for this project).
@@ -50,6 +57,8 @@ const ICONS = {
   code: ['M5.5 4.5 2 8l3.5 3.5', 'M10.5 4.5 14 8l-3.5 3.5'],
   bold: ['M4.5 2.5h4.25a2.75 2.75 0 0 1 0 5.5H4.5z', 'M4.5 8h5a2.75 2.75 0 0 1 0 5.5h-5z'],
   italic: ['M7 2.5h5', 'M4 13.5h5', 'M9.5 2.5l-3 11'],
+  underline: ['M4.5 2.5v5a3.5 3.5 0 0 0 7 0v-5', 'M3.5 14h9'],
+  strike: ['M2.5 8h11', 'M10.8 4.8C10.4 3.6 9.4 3 8 3 6.3 3 5.2 3.8 5.2 5c0 1 .8 1.6 2.8 2', 'M5.2 11c.4 1.2 1.4 1.8 2.8 1.8 1.7 0 2.8-.8 2.8-2'],
   heading: ['M3.5 3v10', 'M10.5 3v10', 'M3.5 8h7', 'M12.5 9.5l1.5-1v4.5'],
   listBullet: ['M6 4h8', 'M6 8h8', 'M6 12h8', 'M2.5 4h.5', 'M2.5 8h.5', 'M2.5 12h.5'],
   listNumber: ['M6 4h8', 'M6 8h8', 'M6 12h8', 'M2 3l1-.5V6', 'M2 10.5a.9.9 0 0 1 1.7.4L2 13h1.8'],
@@ -58,6 +67,14 @@ const ICONS = {
   table: ['M2 3h12v10H2z', 'M2 6.5h12', 'M2 10h12', 'M6.5 3v10'],
   alignH: ['M2 3.5h12', 'M4 6.5h8', 'M2 9.5h12', 'M4 12.5h8'],
   image: ['M2 3h12v10H2z', 'M2 11l3.5-3.5 3 3 2-2L14 12', 'M10.5 5.5a1 1 0 1 0 0 .01'],
+  sortAsc: ['M4 2.5v11', 'M1.8 11.3 4 13.5l2.2-2.2', 'M8.5 3.5h2', 'M8.5 7.5h3.5', 'M8.5 11.5h5'],
+  sortDesc: ['M4 13.5v-11', 'M1.8 4.7 4 2.5l2.2 2.2', 'M8.5 3.5h5', 'M8.5 7.5h3.5', 'M8.5 11.5h2'],
+  sum: ['M12 3H4l4.5 5L4 13h8'],
+  rowInsert: ['M2 3h12v4H2z', 'M8 9.5v4', 'M6 11.5h4'],
+  rowDelete: ['M2 3h12v4H2z', 'M6 11.5h4'],
+  colInsert: ['M3 2h4v12H3z', 'M9.5 8h4', 'M11.5 6v4'],
+  colDelete: ['M3 2h4v12H3z', 'M9.5 8h4'],
+  more: ['M3 8h1', 'M7.5 8h1', 'M12 8h1'],
 } satisfies Record<string, string[]>;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -77,6 +94,9 @@ export function icon(name: IconName): SVGSVGElement {
   return svg;
 }
 
+/** The first buttons stay in the row whatever the width (Undo, Redo, Save ...). */
+const PINNED = 3;
+
 export function createToolbar(): Toolbar {
   const el = document.createElement('div');
   el.className = 'toolbar';
@@ -85,7 +105,29 @@ export function createToolbar(): Toolbar {
   row.className = 'toolbar-row';
   const extra = document.createElement('div');
   extra.className = 'toolbar-extra';
-  el.append(row, extra);
+
+  const more = document.createElement('button');
+  more.type = 'button';
+  more.className = 'tb-btn icon-only tb-more';
+  more.appendChild(icon('more'));
+  more.title = 'More actions';
+  more.setAttribute('aria-label', 'More actions');
+  more.setAttribute('aria-haspopup', 'menu');
+  more.setAttribute('aria-expanded', 'false');
+  more.hidden = true;
+  const menu = document.createElement('div');
+  menu.className = 'tb-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'More actions');
+  menu.hidden = true;
+  row.appendChild(more);
+  el.append(row, menu, extra);
+
+  // Items are added before the "More" button, which stays last.
+  const add = (node: Element) => {
+    row.insertBefore(node, more);
+    schedule();
+  };
 
   const make = (label: string, title: string, ic?: IconName): HTMLButtonElement => {
     const b = document.createElement('button');
@@ -97,12 +139,141 @@ export function createToolbar(): Toolbar {
       s.className = ic ? 'tb-label collapsible' : 'tb-label';
       s.textContent = label;
       b.appendChild(s);
-    } else b.classList.add('icon-only');
+    } else {
+      b.classList.add('icon-only');
+      b.dataset['menuLabel'] = title; // shown as text inside the "More" menu
+    }
     b.title = title;
     b.setAttribute('aria-label', label || title);
-    row.appendChild(b);
+    add(b);
     return b;
   };
+
+  // ---- overflow: items that do not fit move into the menu, in their original order ----
+  /** Where a moved item came from in the row (an empty comment node), so it can go back there. */
+  const holes = new Map<Element, Comment>();
+  let queued = false;
+
+  function schedule() {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      relayout();
+    });
+  }
+
+  const menuButtons = (node: Element): HTMLButtonElement[] =>
+    [node, ...Array.from(node.querySelectorAll('button'))].filter((b): b is HTMLButtonElement => b instanceof HTMLButtonElement);
+
+  function toMenu(node: Element) {
+    const hole = document.createComment('');
+    node.replaceWith(hole);
+    holes.set(node, hole);
+    menu.prepend(node); // items are taken from the end of the row, so prepending keeps the order
+    for (const b of menuButtons(node)) {
+      b.setAttribute('role', 'menuitem');
+      b.classList.add('tb-menu-item');
+      asCheckbox(b);
+    }
+    if (node instanceof HTMLElement && node.classList.contains('sep')) node.hidden = true;
+  }
+
+  function toRow(node: Element) {
+    holes.get(node)?.replaceWith(node);
+    holes.delete(node);
+    for (const b of menuButtons(node)) {
+      b.removeAttribute('role');
+      b.classList.remove('tb-menu-item');
+      const checked = b.getAttribute('aria-checked');
+      if (checked !== null) {
+        b.setAttribute('aria-pressed', checked);
+        b.removeAttribute('aria-checked');
+      }
+    }
+    if (node instanceof HTMLElement && node.classList.contains('sep')) node.hidden = false;
+  }
+
+  /** In the menu a toggle is a checkable menu item (role menuitemcheckbox + aria-checked) instead of a pressed button. */
+  function asCheckbox(b: HTMLButtonElement) {
+    const pressed = b.getAttribute('aria-pressed');
+    if (pressed === null) return;
+    b.setAttribute('role', 'menuitemcheckbox');
+    b.setAttribute('aria-checked', pressed);
+    b.removeAttribute('aria-pressed');
+  }
+
+  const overflows = () => row.scrollWidth > row.clientWidth;
+
+  /** The last row item that may move: not "More", not a pinned button, not the info text or the spacer. */
+  function lastMovable(): Element | undefined {
+    const pinned = Array.from(row.children)
+      .filter((c) => c !== more && c.classList.contains('tb-btn'))
+      .slice(0, PINNED);
+    for (let i = row.children.length - 1; i >= 0; i--) {
+      const c = row.children[i]!;
+      if (c === more || pinned.includes(c) || c.classList.contains('info') || c.classList.contains('tb-spacer')) continue;
+      return c;
+    }
+    return undefined;
+  }
+
+  function relayout() {
+    for (const node of Array.from(holes.keys())) toRow(node);
+    setOpen(false);
+    more.hidden = true;
+    if (!overflows()) return;
+    more.hidden = false;
+    while (overflows()) {
+      const node = lastMovable();
+      if (!node) break;
+      toMenu(node);
+    }
+    if (!menu.children.length) more.hidden = true; // never show an empty menu
+  }
+
+  const menuItems = () => Array.from(menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+
+  function setOpen(open: boolean, focusFirst = false) {
+    menu.hidden = !open;
+    more.setAttribute('aria-expanded', String(open));
+    if (open) for (const b of menu.querySelectorAll('button')) asCheckbox(b); // a state set from outside while in the menu
+    if (open && focusFirst) menuItems()[0]?.focus();
+  }
+
+  more.addEventListener('click', () => setOpen(menu.hidden, true));
+  menu.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      setOpen(false);
+      more.focus();
+      return;
+    }
+    if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+    const items = menuItems();
+    if (!items.length) return;
+    ev.preventDefault();
+    const i = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = ev.key === 'ArrowDown' ? (i + 1) % items.length : i <= 0 ? items.length - 1 : i - 1;
+    items[next]!.focus();
+  });
+  // an item runs on its own click handler (it is the same node); the menu then closes
+  menu.addEventListener('click', (ev) => {
+    if (!(ev.target as Element).closest('button')) return;
+    const hadFocus = menu.contains(document.activeElement);
+    setOpen(false);
+    if (hadFocus) more.focus();
+  });
+  menu.addEventListener('focusout', (ev) => {
+    const next = ev.relatedTarget as Node | null;
+    if (!next || !(menu.contains(next) || more.contains(next))) setOpen(false);
+  });
+  document.addEventListener('click', (ev) => {
+    if (menu.hidden) return;
+    const t = ev.target as Node;
+    if (!menu.contains(t) && !more.contains(t)) setOpen(false);
+  });
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(() => relayout()).observe(row);
 
   return {
     el,
@@ -116,29 +287,35 @@ export function createToolbar(): Toolbar {
       const b = make(label, title, ic);
       b.setAttribute('aria-pressed', 'false');
       b.addEventListener('click', () => {
-        const on = b.getAttribute('aria-pressed') !== 'true';
-        b.setAttribute('aria-pressed', String(on));
+        // in the "More" menu the state is aria-checked
+        const attr = b.hasAttribute('aria-checked') ? 'aria-checked' : 'aria-pressed';
+        const on = b.getAttribute(attr) !== 'true';
+        b.setAttribute(attr, String(on));
         onChange(on);
       });
       return b;
+    },
+    custom(node) {
+      add(node);
     },
     separator() {
       const s = document.createElement('span');
       s.className = 'sep';
       s.setAttribute('role', 'separator');
-      row.appendChild(s);
+      add(s);
     },
     info() {
       const i = document.createElement('span');
       i.className = 'info';
-      row.appendChild(i);
+      add(i);
       return i;
     },
     spacer() {
       const s = document.createElement('span');
       s.className = 'tb-spacer';
-      row.appendChild(s);
+      add(s);
     },
+    relayout,
   };
 }
 
@@ -163,11 +340,14 @@ export function addZoom(tb: Toolbar, apply: (factor: number) => void): void {
     out.disabled = zoom <= ZOOM_MIN;
     inn.disabled = zoom >= ZOOM_MAX;
     apply(zoom);
+    patchViewState({ zoom });
   };
   const step = (dir: 1 | -1) => {
     const next = dir > 0 ? STEPS.find((s) => s > zoom + 0.001) : [...STEPS].reverse().find((s) => s < zoom - 0.001);
     set(next ?? zoom);
   };
+  const saved = viewState().zoom;
+  if (typeof saved === 'number' && saved >= ZOOM_MIN && saved <= ZOOM_MAX && saved !== 1) set(saved);
   // one active zoom group per document (the view is rebuilt on revert)
   zoomListeners?.abort();
   zoomListeners = new AbortController();

@@ -1,4 +1,4 @@
-import type { ApplyResult, CellEdit, CellStyle, CellView, Edit, MergeRange, SheetData, SheetEdit, SheetModel } from '../../shared/model';
+import type { ApplyResult, CellEdit, CellStyle, CellView, Edit, LinesEdit, MergeRange, SheetData, SheetEdit, SheetModel } from '../../shared/model';
 import { MAX_COLS, MAX_ROWS } from '../../shared/model';
 import type { FormatAdapter } from './Adapter';
 import { isEl, MIME_ODS, NS, odfText, openOdf, saveOdf, setOdfText, type OdfPackage } from './odf';
@@ -72,6 +72,7 @@ export class OdsAdapter implements FormatAdapter {
       this.wraps = cellStyles(this.pkg.content);
       return { cell: this.view(cell) };
     }
+    if (edit.kind === 'lines') return this.applyLines(edit);
     if (edit.kind !== 'cell') throw new Error('Not a cell edit');
     const table = this.tables[edit.sheet];
     if (!table) throw new Error(`Sheet ${edit.sheet} does not exist`);
@@ -96,6 +97,93 @@ export class OdsAdapter implements FormatAdapter {
     const res: ApplyResult = { cell: this.view(cell) };
     if (others.length) res.others = others;
     return res;
+  }
+
+  /** Rows deleted by the user with their cells and styles, so that undo puts them back exactly (columns: values only). */
+  private readonly deletedRows: { table: Element; at: number; rows: Element[] }[] = [];
+
+  /** Inserts or deletes rows / columns of a table. Formula texts are rewritten by the view (cell edits). */
+  private applyLines(e: LinesEdit): ApplyResult {
+    const table = this.tables[e.sheet];
+    if (!table) throw new Error(`Sheet ${e.sheet} does not exist`);
+    const doc = this.pkg.content;
+    this.originals.delete(table);
+    const { at, count } = e;
+    if (e.axis === 'row') {
+      const total = () => rowElements(table).reduce((n, r) => n + repeatOf(r, ROW_REPEAT), 0);
+      if (e.op === 'delete') {
+        const rows: Element[] = [];
+        for (let i = 0; i < count && at < total(); i++) {
+          const row = locateRow(doc, table, at);
+          rows.push(row.cloneNode(true) as Element);
+          row.parentNode!.removeChild(row);
+        }
+        this.deletedRows.push({ table, at, rows });
+      } else if (at < total()) {
+        const ref = locateRow(doc, table, at);
+        const k = this.deletedRows.findIndex((d) => d.table === table && d.at === at && d.rows.length === count);
+        const saved = e.cells && k >= 0 ? this.deletedRows.splice(k, 1)[0]!.rows : undefined;
+        for (let i = 0; i < count; i++) {
+          let row: Element;
+          if (saved) row = saved[i]!.cloneNode(true) as Element;
+          else {
+            row = newElement(doc, table, 'table-row');
+            row.appendChild(newElement(doc, table, 'table-cell'));
+          }
+          ref.parentNode!.insertBefore(row, ref);
+        }
+        if (!saved) this.writeLines(e);
+      } else this.writeLines(e);
+    } else {
+      const cols = () => columnElements(table).reduce((n, c) => n + repeatOf(c, COL_REPEAT), 0);
+      if (e.op === 'delete') {
+        for (let i = 0; i < count && at < cols(); i++) {
+          const col = this.columnAt(table, at);
+          col.parentNode!.removeChild(col);
+        }
+      } else if (at < cols()) {
+        const ref = this.columnAt(table, at);
+        for (let i = 0; i < count; i++) ref.parentNode!.insertBefore(newElement(doc, table, 'table-column'), ref);
+      }
+      for (const rowEl of rowElements(table)) {
+        const width = () => cellElements(rowEl).reduce((n, c) => n + repeatOf(c, COL_REPEAT), 0);
+        for (let i = 0; i < count; i++) {
+          if (at >= width()) break;
+          const cell = locateCell(doc, rowEl, at);
+          if (e.op === 'delete') cell.parentNode!.removeChild(cell);
+          else cell.parentNode!.insertBefore(newElement(doc, rowEl, 'table-cell'), cell);
+        }
+      }
+      if (e.op === 'insert') this.writeLines(e);
+    }
+    const others = this.recalc();
+    const res: ApplyResult = { sheet: this.sheetData(table) };
+    if (others.length) res.others = others;
+    return res;
+  }
+
+  /** Writes the content of restored lines (`cells`) into the table. */
+  private writeLines(e: LinesEdit): void {
+    const table = this.tables[e.sheet]!;
+    e.cells?.forEach((line, i) =>
+      line.forEach((v, j) => {
+        if (v === '') return;
+        const [r, c] = e.axis === 'row' ? [e.at + i, j] : [j, e.at + i];
+        const cell = locateCell(this.pkg.content, locateRow(this.pkg.content, table, r), c);
+        writeCell(this.pkg.content, cell, { kind: 'cell', sheet: e.sheet, row: r, col: c, value: v, old: '' });
+      }),
+    );
+  }
+
+  /** The table-column element for column `c`, split out of a repeated one. */
+  private columnAt(table: Element, c: number): Element {
+    let pos = 0;
+    for (const col of columnElements(table)) {
+      const rep = repeatOf(col, COL_REPEAT);
+      if (c < pos + rep) return splitRepeated(col, COL_REPEAT, c - pos);
+      pos += rep;
+    }
+    throw new Error('Column out of range');
   }
 
   private applySheet(edit: SheetEdit): ApplyResult {

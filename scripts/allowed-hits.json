@@ -1,40 +1,52 @@
 {
   "hits": [
     {
-      "file": "worker.js",
+      "file": "worker-sheet.js",
       "pattern": "importScripts",
-      "count": 3,
-      "reason": "Reviewed: only feature checks (`!self.importScripts`) inside the setImmediate polyfills of exceljs/jszip/core-js. Never called. A call would also fail: worker-src allows only blob: and the extension origin, and connect-src is 'none'."
+      "count": 2,
+      "reason": "Reviewed: only feature checks (`!self.importScripts`) inside the setImmediate polyfills of exceljs/jszip/core-js. Never called. A call would also fail: worker-src allows only blob: and the extension origin, and connect-src is 'none'. (The worker source is a string literal inside this file; it is only turned into a blob: Worker.)"
     },
     {
-      "file": "worker.js",
+      "file": "worker-sheet.js",
       "pattern": "new Function",
-      "count": 11,
-      "reason": "Reviewed: (a) 9x `Function(\"return this\")()` as the last fallback for finding the global object in lodash/core-js/exceljs; `self` is found first in a worker, so it is not reached. (b) underscore `_.template` (mammoth dependency, not used by mammoth's HTML conversion). (c) setImmediate polyfill with string argument (never called with a string). The CSP has no 'unsafe-eval', so any dynamic code evaluation throws EvalError."
+      "count": 8,
+      "reason": "Reviewed: `Function(\"return this\")()` as the last fallback for finding the global object in lodash/core-js/exceljs (`self` is found first in a worker, so it is not reached) and a setImmediate polyfill with a string argument (never called with a string). The CSP has no 'unsafe-eval', so any dynamic code evaluation throws EvalError."
     },
     {
-      "file": "worker.js",
+      "file": "worker-sheet.js",
       "pattern": "XMLHttpRequest",
       "count": 1,
       "reason": "Reviewed: papaparse (MIT) NetworkStreamer for `download: true` (parsing a remote URL). We only call Papa.parse on a string and never pass `download`, so it is never reached; if it were, connect-src 'none' blocks the request."
     },
     {
-      "file": "webview.js",
-      "pattern": "fetch(",
-      "count": 4,
-      "reason": "Reviewed: pdf.js (pdfjs-dist, Apache-2.0) loaders for document URLs, CMaps, standard fonts and wasm. We only call getDocument({data}) with bytes from the host and set no URLs, so they are never reached; if they were, connect-src is 'none' and the request is blocked (reported via securitypolicyviolation)."
-    },
-    {
-      "file": "webview.js",
-      "pattern": "XMLHttpRequest",
-      "count": 3,
-      "reason": "Reviewed: pdf.js network stream and URL-loading fallback. Same as fetch( above: never reached for data: documents, and blocked by connect-src 'none' otherwise."
-    },
-    {
-      "file": "webview.js",
-      "pattern": "new Function",
+      "file": "worker-doc.js",
+      "pattern": "importScripts",
       "count": 1,
-      "reason": "Reviewed: core-js polyfill (pdf.js legacy build) uses `Function(\"return this\")()` only as the last fallback to find the global object; `globalThis`/`self`/`window` are found first. The CSP has no 'unsafe-eval', so any dynamic code evaluation throws EvalError."
+      "reason": "Reviewed: feature check (`!self.importScripts`) inside the setImmediate polyfill of jszip. Never called; a call would fail (worker-src and connect-src)."
+    },
+    {
+      "file": "worker-doc.js",
+      "pattern": "new Function",
+      "count": 3,
+      "reason": "Reviewed: `Function(\"return this\")()` as the last fallback for the global object (not reached, `self` is found first), underscore `_.template` (mammoth dependency, not used by mammoth's HTML conversion) and the jszip setImmediate polyfill with a string argument (never called with a string). The CSP has no 'unsafe-eval', so any dynamic code evaluation throws EvalError."
+    },
+    {
+      "file": "pdf.js",
+      "pattern": "fetch(",
+      "count": 37,
+      "reason": "Reviewed: 4 in pdf.js main code (loaders for document URLs, CMaps, standard fonts, wasm) plus 33 in the embedded pdf.js worker source (mostly `xref.fetch(ref)`, which reads PDF objects and is no network call; one `fetchBinaryData` for CMaps/fonts). We only call getDocument({data}) with bytes from the host and set no URLs, so no network loader is reached; if one were, connect-src is 'none' and the request is blocked (reported via securitypolicyviolation)."
+    },
+    {
+      "file": "pdf.js",
+      "pattern": "XMLHttpRequest",
+      "count": 4,
+      "reason": "Reviewed: 3 in pdf.js (network stream and URL-loading fallback) and 1 in the embedded pdf.js worker source. Same as fetch( above: never reached for data: documents, and blocked by connect-src 'none' otherwise."
+    },
+    {
+      "file": "pdf.js",
+      "pattern": "new Function",
+      "count": 2,
+      "reason": "Reviewed: core-js polyfill (pdf.js legacy build) in pdf.js and in the embedded pdf.js worker source uses `Function(\"return this\")()` only as the last fallback to find the global object; `globalThis`/`self`/`window` are found first. The CSP has no 'unsafe-eval', so any dynamic code evaluation throws EvalError."
     }
   ]
 }

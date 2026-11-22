@@ -1,11 +1,15 @@
-// Builds the three bundles (see doc/arch42.md §7):
+// Builds the bundles (see doc/arch42.md §7):
 //   dist/host.js    extension host (node, cjs, own code only)
-//   dist/worker.js  Web Worker with the format adapters and third-party libraries
-//   dist/webview.js webview UI; embeds worker.js as base64 so no network request or
-//                   extra resource is needed to start the worker (connect-src stays 'none')
+//   dist/worker-<family>.raw.js  Web Worker with the adapters and libraries of one family (sheet: xlsx, ods,
+//                   csv; doc: docx, odt, pptx, odp; pdf: pdf-lib). Intermediate, not shipped.
+//   dist/worker-sheet.js, worker-doc.js  the worker source as a JS string literal in a classic script that
+//                   sets globalThis.vsofxWorkers[family]; loaded by webview.js when such a file is opened
+//   dist/webview.js webview UI (small: no libraries)
+//   dist/pdf.js     pdf.js + PDF view + the pdf.js worker source + the pdf format worker source (string
+//                   literals); a classic script that sets globalThis.vsofxPdf, loaded when a PDF is opened
 // plus dist/webview.css (imported from main.ts) and, with --test-build, dist/probe.js.
 import * as esbuild from 'esbuild';
-import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -34,22 +38,28 @@ const forbidNodeModules = {
   },
 };
 
-/** Provides `virtual:worker-bytes` (dist/worker.js) and `virtual:pdf-worker-bytes` (pdf.js worker) as base64 strings. */
-const embedWorker = {
+/**
+ * Provides `virtual:worker-source` (dist/worker-<family>.raw.js, the format worker of one family) and
+ * `virtual:pdf-worker-source` (pdf.js worker) as JS string literals.
+ */
+const embedWorker = (family) => ({
   name: 'embed-worker',
   setup(build) {
     const files = {
-      'virtual:worker-bytes': () => path.join(root, 'dist', 'worker.js'),
-      'virtual:pdf-worker-bytes': () => path.join(root, 'node_modules', 'pdfjs-dist', 'legacy', 'build', 'pdf.worker.min.mjs'),
+      'virtual:worker-source': () => path.join(root, 'dist', `worker-${family}.raw.js`),
+      'virtual:pdf-worker-source': () => path.join(root, 'node_modules', 'pdfjs-dist', 'legacy', 'build', 'pdf.worker.min.mjs'),
     };
-    build.onResolve({ filter: /^virtual:(pdf-)?worker-bytes$/ }, (a) => ({ path: a.path, namespace: 'vsofx-virtual' }));
+    build.onResolve({ filter: /^virtual:(pdf-)?worker-source$/ }, (a) => ({ path: a.path, namespace: 'vsofx-virtual' }));
     build.onLoad({ filter: /.*/, namespace: 'vsofx-virtual' }, async (a) => {
       const file = files[a.path]();
-      const b64 = (await readFile(file)).toString('base64');
-      return { contents: `export default ${JSON.stringify(b64)};`, loader: 'js', watchFiles: [file] };
+      const text = await readFile(file, 'utf8');
+      return { contents: `export default ${JSON.stringify(text)};`, loader: 'js', watchFiles: [file] };
     });
   },
-};
+});
+
+/** Format workers, one per family, so a document does not parse the libraries of the other families. */
+const FAMILIES = ['sheet', 'doc', 'pdf'];
 
 const common = {
   bundle: true,
@@ -83,18 +93,33 @@ const configs = {
     external: ['vscode'],
     define: { __BUILD__: JSON.stringify(`${buildInfo.version} (${buildInfo.label})`) },
   },
-  worker: {
-    ...browserCommon,
-    entryPoints: ['src/webview/worker.ts'],
-    outfile: 'dist/worker.js',
-  },
   webview: {
     ...browserCommon,
     entryPoints: { webview: 'src/webview/main.ts' },
     outdir: 'dist',
-    plugins: [forbidNodeModules, embedWorker],
+  },
+  pdf: {
+    ...browserCommon,
+    entryPoints: ['src/webview/pdfChunk.ts'],
+    outfile: 'dist/pdf.js',
+    plugins: [forbidNodeModules, embedWorker('pdf')],
   },
 };
+for (const f of FAMILIES) {
+  // the worker itself (not shipped) ...
+  configs[`worker-${f}`] = { ...browserCommon, entryPoints: [`src/webview/workers/${f}.ts`], outfile: `dist/worker-${f}.raw.js` };
+  // ... and the script that hands its source over on globalThis (shipped, loaded on demand). The PDF
+  // worker source travels inside dist/pdf.js instead.
+  if (f !== 'pdf') {
+    configs[`chunk-${f}`] = {
+      ...browserCommon,
+      entryPoints: ['src/webview/workerChunk.ts'],
+      outfile: `dist/worker-${f}.js`,
+      plugins: [forbidNodeModules, embedWorker(f)],
+      define: { ...browserCommon.define, __FAMILY__: JSON.stringify(f) },
+    };
+  }
+}
 if (testBuild) {
   configs.probe = {
     ...browserCommon,
@@ -124,7 +149,14 @@ async function run() {
   await rm(path.join(root, 'dist'), { recursive: true, force: true });
   await rm(path.join(root, 'out'), { recursive: true, force: true });
   await mkdir(path.join(root, 'dist'), { recursive: true });
-  const order = ['host', 'worker', 'webview', ...(testBuild ? ['probe', 'integration'] : [])];
+  const order = [
+    'host',
+    ...FAMILIES.map((f) => `worker-${f}`),
+    ...FAMILIES.filter((f) => f !== 'pdf').map((f) => `chunk-${f}`),
+    'pdf',
+    'webview',
+    ...(testBuild ? ['probe', 'integration'] : []),
+  ];
   if (watch) {
     for (const name of order) {
       const ctx = await esbuild.context({
@@ -140,8 +172,10 @@ async function run() {
     const result = await esbuild.build(configs[name]);
     await writeMeta(name, result);
   }
-  const { size } = await import('node:fs').then((fs) => fs.promises.stat(path.join(root, 'dist', 'worker.js')));
-  console.log(`worker.js: ${(size / 1024).toFixed(0)} KiB`);
+  for (const f of ['host.js', 'worker-sheet.js', 'worker-doc.js', 'pdf.js', 'webview.js']) {
+    const { size } = await stat(path.join(root, 'dist', f));
+    console.log(`${f}: ${(size / 1024).toFixed(0)} KiB`);
+  }
 }
 
 run().catch(() => process.exit(1));

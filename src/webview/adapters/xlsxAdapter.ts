@@ -1,5 +1,5 @@
 import * as ExcelNS from 'exceljs';
-import type { ApplyResult, CellEdit, CellStyle, CellView, Edit, MergeRange, SheetData, SheetEdit, SheetModel } from '../../shared/model';
+import type { ApplyResult, CellEdit, CellStyle, CellView, Edit, LinesEdit, MergeRange, SheetData, SheetEdit, SheetModel } from '../../shared/model';
 import { MAX_COLS, MAX_ROWS } from '../../shared/model';
 import { Calc, FormulaError, UNSUPPORTED, type Book, type Scalar } from '../../shared/formula';
 import type { FormatAdapter } from './Adapter';
@@ -86,6 +86,7 @@ export class XlsxAdapter implements FormatAdapter {
       cell.alignment = al;
       return { cell: this.cellView(cell) };
     }
+    if (edit.kind === 'lines') return this.applyLines(edit);
     if (edit.kind !== 'cell') throw new Error('Not a cell edit');
     const ws = this.workbook.worksheets[edit.sheet];
     if (!ws) throw new Error(`Sheet ${edit.sheet} does not exist`);
@@ -102,6 +103,83 @@ export class XlsxAdapter implements FormatAdapter {
     (this.workbook as unknown as { calcProperties: { fullCalcOnLoad?: boolean } }).calcProperties.fullCalcOnLoad = true;
     const others = this.recalc().filter((o) => !(o.sheet === edit.sheet && o.row === edit.row && o.col === edit.col));
     const res: ApplyResult = { cell: this.cellView(cell) };
+    if (others.length) res.others = others;
+    return res;
+  }
+
+  /** Lines deleted by the user with their cells and styles, so that undo puts them back exactly. */
+  private readonly deletedLines: { ws: ExcelNS.Worksheet; axis: 'row' | 'col'; at: number; count: number; cells: { i: number; j: number; value: ExcelNS.CellValue; style: unknown; height?: number }[] }[] = [];
+
+  /**
+   * Inserts or deletes rows / columns. Formula texts are not touched here (the view rewrites them with
+   * cell edits); shared formulas are turned into plain ones first because exceljs would keep pointing at the old master.
+   */
+  private applyLines(edit: LinesEdit): ApplyResult {
+    const ws = this.workbook.worksheets[edit.sheet];
+    if (!ws) throw new Error(`Sheet ${edit.sheet} does not exist`);
+    for (const key of Array.from(this.originals.keys())) if (key.startsWith(`${ws.id}:`)) this.originals.delete(key);
+    ws.eachRow({ includeEmpty: false }, (row) =>
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        const v = cell.value as { sharedFormula?: string; shareType?: string; result?: unknown } | null;
+        if (v && typeof v === 'object' && (v.sharedFormula || v.shareType === 'shared')) {
+          cell.value = { formula: cell.formula, result: v.result } as unknown as ExcelNS.CellValue;
+        }
+      }),
+    );
+    const { at, count } = edit;
+    const row = edit.axis === 'row';
+    if (edit.op === 'delete') {
+      const saved: (typeof this.deletedLines)[number] = { ws, axis: edit.axis, at, count, cells: [] };
+      for (let r = 1; r <= ws.rowCount; r++) {
+        const rw = ws.findRow(r);
+        if (!rw) continue;
+        rw.eachCell({ includeEmpty: false }, (cell, c) => {
+          const i = (row ? r : c) - 1 - at;
+          if (i < 0 || i >= count) return;
+          const entry: (typeof saved.cells)[number] = { i, j: (row ? c : r) - 1, value: cell.value, style: JSON.parse(JSON.stringify(cell.style ?? {})) };
+          if (row && rw.height) entry.height = rw.height;
+          saved.cells.push(entry);
+        });
+      }
+      this.deletedLines.push(saved);
+      if (row) ws.spliceRows(at + 1, count);
+      else {
+        ws.spliceColumns(at + 1, count);
+        // the cells that moved left leave empty ones at the end of each row: cut them off (they would count as columns)
+        ws.eachRow({ includeEmpty: false }, (rw) => {
+          const cells = (rw as unknown as { _cells: (ExcelNS.Cell | undefined)[] })._cells;
+          while (cells.length) {
+            const last = cells[cells.length - 1];
+            if (last && (last.value !== null || Object.keys(last.style ?? {}).length)) break;
+            cells.pop();
+          }
+        });
+      }
+    } else {
+      const blank = Array.from({ length: count }, () => [] as ExcelNS.CellValue[]);
+      if (row) ws.spliceRows(at + 1, 0, ...blank);
+      else ws.spliceColumns(at + 1, 0, ...blank);
+      const k = this.deletedLines.findIndex((d) => d.ws === ws && d.axis === edit.axis && d.at === at && d.count === count);
+      if (edit.cells && k >= 0) {
+        for (const e of this.deletedLines.splice(k, 1)[0]!.cells) {
+          const cell = row ? ws.getCell(at + e.i + 1, e.j + 1) : ws.getCell(e.j + 1, at + e.i + 1);
+          cell.value = e.value;
+          cell.style = e.style as ExcelNS.Style;
+          if (e.height) ws.getRow(at + e.i + 1).height = e.height;
+        }
+      } else {
+        edit.cells?.forEach((line, i) =>
+          line.forEach((v, j) => {
+            if (v === '') return;
+            const cell = row ? ws.getCell(at + i + 1, j + 1) : ws.getCell(j + 1, at + i + 1);
+            cell.value = parseInput({ kind: 'cell', sheet: edit.sheet, row: 0, col: 0, value: v, old: '' }, null);
+          }),
+        );
+      }
+    }
+    (this.workbook as unknown as { calcProperties: { fullCalcOnLoad?: boolean } }).calcProperties.fullCalcOnLoad = true;
+    const others = this.recalc();
+    const res: ApplyResult = { sheet: this.sheetData(ws) };
     if (others.length) res.others = others;
     return res;
   }

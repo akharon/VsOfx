@@ -1,17 +1,15 @@
 // Types shared by the extension host and the webview. No runtime dependencies.
 import { inverseOp, isPdfEdit, type PdfEdit, type PdfStateJson } from './pdf';
-import { isAnchorIndex, isNewParaIndex, isParaFmt, isTableSpec, type ParaFmt, type TableSpec } from './richtext';
+import { CELL_BASE, isAnchorIndex, isNewParaIndex, isParaFmt, isTableSpec, type ParaFmt, type TableSpec } from './richtext';
 
-export type CodeLang = 'markdown';
-export type Format = 'docx' | 'xlsx' | 'pptx' | 'odt' | 'ods' | 'odp' | 'odg' | 'pdf' | 'csv' | CodeLang;
+export type Format = 'docx' | 'xlsx' | 'pptx' | 'odt' | 'ods' | 'odp' | 'odg' | 'pdf' | 'csv';
 
-export const FORMATS: readonly Format[] = ['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'odg', 'pdf', 'csv', 'markdown'];
+export const FORMATS: readonly Format[] = ['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'odg', 'pdf', 'csv'];
 
 /** File extension -> format. */
 const EXTENSIONS: Record<string, Format> = {
   docx: 'docx', xlsx: 'xlsx', pptx: 'pptx', odt: 'odt', ods: 'ods', odp: 'odp', odg: 'odg', pdf: 'pdf',
   csv: 'csv', tsv: 'csv', tab: 'csv',
-  md: 'markdown', markdown: 'markdown', mdown: 'markdown', mkd: 'markdown',
 };
 
 export function formatFromPath(path: string): Format | undefined {
@@ -20,38 +18,7 @@ export function formatFromPath(path: string): Format | undefined {
   return ext ? EXTENSIONS[ext] : undefined;
 }
 
-export const isCodeLang = (f: Format): f is CodeLang => f === 'markdown';
-export const isTextFormat = (f: Format): boolean => f === 'csv' || isCodeLang(f);
-
-/**
- * Splice of a text document (Markdown): at offset `at` (in the
- * "\n"-normalised text), `del` is replaced by `ins`. The inverse swaps `del` and `ins`.
- */
-export interface TextEdit {
-  kind: 'text';
-  at: number;
-  del: string;
-  ins: string;
-}
-
-/** Applies a splice; throws if the text does not contain `del` at `at` (document out of sync). */
-export function applyTextEdit(text: string, e: TextEdit): string {
-  if (e.at > text.length || text.slice(e.at, e.at + e.del.length) !== e.del) throw new Error('The edit does not match the document (out of sync).');
-  return text.slice(0, e.at) + e.ins + text.slice(e.at + e.del.length);
-}
-
-/** Smallest splice that turns `a` into `b` (common prefix and suffix are kept). */
-export function diffText(a: string, b: string): TextEdit | null {
-  if (a === b) return null;
-  let p = 0;
-  const max = Math.min(a.length, b.length);
-  while (p < max && a.charCodeAt(p) === b.charCodeAt(p)) p++;
-  let s = 0;
-  while (s < max - p && a.charCodeAt(a.length - 1 - s) === b.charCodeAt(b.length - 1 - s)) s++;
-  // do not split a surrogate pair
-  if (p > 0 && /[\uD800-\uDBFF]/.test(a.charAt(p - 1))) p--;
-  return { kind: 'text', at: p, del: a.slice(p, a.length - s), ins: b.slice(p, b.length - s) };
-}
+export const isTextFormat = (f: Format): boolean => f === 'csv';
 
 /** Cell edit. `value`/`old` are the strings a user would type into the cell. */
 export interface CellEdit {
@@ -88,6 +55,20 @@ export interface NewParaEdit {
   index: number; // PARA_BASE + id
   after: number;
   fmt: ParaFmt;
+}
+
+/**
+ * Word/Writer: an ORIGINAL paragraph (index < CELL_BASE) removed from the document (join, delete a
+ * selection) or restored at the same place (the inverse). `fmt` is its content, so the view can show
+ * it again. `to`: paragraphs and tables that were anchored after it follow this anchor instead
+ * (and back on restore). Added paragraphs use NewParaEdit; table cells are never removed.
+ */
+export interface DelParaEdit {
+  kind: 'delpara';
+  op: 'remove' | 'restore';
+  index: number;
+  fmt: ParaFmt;
+  to?: number;
 }
 
 /** Spreadsheets: add, remove or rename a sheet. `old` is the previous name (rename). */
@@ -142,13 +123,32 @@ const isCellAlign = (x: unknown): x is CellAlign => {
   );
 };
 
+/**
+ * Spreadsheets: `count` rows or columns inserted at (before) 0-based index `at`, or deleted from there.
+ * `cells` is the content (what a user would type) of the lines: for a delete the lines that are lost,
+ * for an insert the lines that are put back (undo of a delete); `cells[i][j]` is line `at + i`, position `j`
+ * along the other axis. Formulas that point at shifted cells are rewritten by separate cell edits
+ * in the same batch, so the edit itself only moves cells.
+ */
+export interface LinesEdit {
+  kind: 'lines';
+  sheet: number;
+  axis: 'row' | 'col';
+  op: 'insert' | 'delete';
+  at: number;
+  count: number;
+  cells?: string[][];
+}
+
+export const MAX_LINES_EDIT = 1000;
+
 /** Several edits that are done and undone together (paste, clearing a range, Enter). */
 export interface BatchEdit {
   kind: 'batch';
   edits: Edit[];
 }
 
-export type Edit = CellEdit | ParagraphEdit | PdfEdit | TextEdit | TableEdit | NewParaEdit | SheetEdit | ColWidthEdit | WrapEdit | AlignEdit | BatchEdit;
+export type Edit = CellEdit | ParagraphEdit | PdfEdit | TableEdit | NewParaEdit | DelParaEdit | SheetEdit | ColWidthEdit | WrapEdit | AlignEdit | LinesEdit | BatchEdit;
 
 export const MAX_SHEET_NAME = 100;
 /** Sheet names that Excel and LibreOffice both accept. */
@@ -163,7 +163,6 @@ export function isEdit(x: unknown): x is Edit {
     return int(e['sheet']) && int(e['row']) && int(e['col']) && typeof e['value'] === 'string' && typeof e['old'] === 'string';
   }
   if (e['kind'] === 'pdf') return isPdfEdit(x);
-  if (e['kind'] === 'text') return int(e['at']) && typeof e['del'] === 'string' && typeof e['ins'] === 'string';
   if (e['kind'] === 'paragraph') {
     return (
       int(e['index']) &&
@@ -176,6 +175,15 @@ export function isEdit(x: unknown): x is Edit {
   if (e['kind'] === 'table') return (e['op'] === 'insert' || e['op'] === 'remove') && isTableSpec(e['table']);
   if (e['kind'] === 'newpara') {
     return (e['op'] === 'insert' || e['op'] === 'remove') && isNewParaIndex(e['index'] as number) && isAnchorIndex(e['after'] as number) && isParaFmt(e['fmt']);
+  }
+  if (e['kind'] === 'delpara') {
+    return (
+      (e['op'] === 'remove' || e['op'] === 'restore') &&
+      int(e['index']) &&
+      (e['index'] as number) < CELL_BASE &&
+      isParaFmt(e['fmt']) &&
+      (e['to'] === undefined || (typeof e['to'] === 'number' && isAnchorIndex(e['to'])))
+    );
   }
   if (e['kind'] === 'sheet') {
     return (
@@ -191,6 +199,21 @@ export function isEdit(x: unknown): x is Edit {
   if (e['kind'] === 'colwidth') return int(e['sheet']) && int(e['col']) && width(e['width']) && width(e['old']);
   if (e['kind'] === 'wrap') return int(e['sheet']) && int(e['row']) && int(e['col']) && typeof e['wrap'] === 'boolean' && typeof e['old'] === 'boolean';
   if (e['kind'] === 'align') return int(e['sheet']) && int(e['row']) && int(e['col']) && isCellAlign(e['align']) && isCellAlign(e['old']);
+  if (e['kind'] === 'lines') {
+    const cells = e['cells'];
+    return (
+      int(e['sheet']) &&
+      (e['axis'] === 'row' || e['axis'] === 'col') &&
+      (e['op'] === 'insert' || e['op'] === 'delete') &&
+      int(e['at']) &&
+      int(e['count']) &&
+      (e['count'] as number) >= 1 &&
+      (e['count'] as number) <= MAX_LINES_EDIT &&
+      (e['at'] as number) < MAX_ROWS &&
+      (cells === undefined ||
+        (Array.isArray(cells) && cells.length <= MAX_LINES_EDIT && cells.every((l) => Array.isArray(l) && l.length <= MAX_ROWS && l.every((v) => typeof v === 'string'))))
+    );
+  }
   if (e['kind'] === 'batch') {
     const list = e['edits'];
     return Array.isArray(list) && list.length > 0 && list.length <= 100_000 && list.every((x) => isEdit(x) && (x as Edit).kind !== 'batch');
@@ -201,13 +224,14 @@ export function isEdit(x: unknown): x is Edit {
 /** The edit that reverts `e` (so the host can undo without parsing anything). */
 export function inverseEdit(e: Edit): Edit {
   if (e.kind === 'pdf') return { kind: 'pdf', op: inverseOp(e.op) };
-  if (e.kind === 'text') return { kind: 'text', at: e.at, del: e.ins, ins: e.del };
   if (e.kind === 'table') return { ...e, op: e.op === 'insert' ? 'remove' : 'insert' };
   if (e.kind === 'cell') return { ...e, value: e.old, old: e.value };
   if (e.kind === 'colwidth') return { ...e, width: e.old, old: e.width };
   if (e.kind === 'wrap') return { ...e, wrap: e.old, old: e.wrap };
   if (e.kind === 'align') return { ...e, align: e.old, old: e.align };
   if (e.kind === 'newpara') return { ...e, op: e.op === 'insert' ? 'remove' : 'insert' };
+  if (e.kind === 'delpara') return { ...e, op: e.op === 'remove' ? 'restore' : 'remove' };
+  if (e.kind === 'lines') return { ...e, op: e.op === 'insert' ? 'delete' : 'insert' };
   if (e.kind === 'batch') return { kind: 'batch', edits: e.edits.map(inverseEdit).reverse() };
   if (e.kind === 'sheet') {
     if (e.op === 'rename') return { kind: 'sheet', op: 'rename', index: e.index, name: e.old ?? e.name, old: e.name };
@@ -301,20 +325,7 @@ export interface PdfModel {
   state: PdfStateJson;
 }
 
-/** JSON, YAML, XML or Markdown source ("\n" line ends; the adapter restores the original ones on save). */
-export interface CodeModel {
-  type: 'code';
-  lang: CodeLang;
-  text: string;
-}
-
-/** One file of the document as text, for the Source view. */
-export interface SourcePart {
-  name: string;
-  text: string;
-}
-
-export type DocModel = TextModel | SheetModel | SlidesModel | PdfModel | CodeModel;
+export type DocModel = TextModel | SheetModel | SlidesModel | PdfModel;
 
 /** Result of applying an edit in the worker. */
 export interface ApplyResult {

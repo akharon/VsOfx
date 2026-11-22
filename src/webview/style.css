@@ -295,6 +295,18 @@ table.grid td.editing {
   background: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
   box-shadow: inset 0 -2px 0 var(--vscode-focusBorder);
 }
+/* sheet status line (Average, Count, Sum of the selection) at the right end of the tabs bar */
+.tabs .sheet-status {
+  flex: none;
+  align-self: center;
+  margin-left: auto;
+  padding: 0 8px;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+}
 
 /* ---- slides ---- */
 .slides {
@@ -387,11 +399,18 @@ table.grid td.editing {
 .pdf-panel {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 2px;
   min-height: 34px;
   padding: 2px 8px;
   box-sizing: border-box;
+}
+.pdf-panel {
+  flex-wrap: wrap;
+}
+/* the main row never wraps: what does not fit moves into the "More" menu */
+.toolbar-row {
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 .tb-btn {
   display: inline-flex;
@@ -426,7 +445,8 @@ table.grid td.editing {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
 }
-.tb-btn[aria-pressed='true'] {
+.tb-btn[aria-pressed='true'],
+.tb-btn[aria-checked='true'] {
   color: var(--vscode-inputOption-activeForeground, var(--tb-fg));
   background: var(--tb-pressed-bg);
   border-color: var(--tb-pressed-border);
@@ -516,6 +536,51 @@ table.grid td.editing {
   .toolbar .info.hint {
     display: none;
   }
+}
+/* "More" button and its menu (toolbar.ts) */
+.tb-more[hidden],
+.tb-menu[hidden] {
+  display: none;
+}
+.tb-more[aria-expanded='true'] {
+  background: var(--tb-hover);
+}
+.tb-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 8px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 170px;
+  max-width: min(90vw, 320px);
+  padding: 4px;
+  box-sizing: border-box;
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-editorWidget-border, transparent);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+.tb-menu .tb-group {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.tb-menu .tb-btn,
+.tb-menu .tb-btn.icon-only,
+.tb-menu .tb-btn:has(> .tb-label) {
+  width: 100%;
+  padding: 0 8px;
+  justify-content: flex-start;
+}
+/* in the menu every label is visible, also in narrow editors; icon-only buttons show their tooltip text */
+.tb-menu .tb-label {
+  display: inline;
+}
+.tb-menu .tb-btn.icon-only[data-menu-label]::after {
+  content: attr(data-menu-label);
 }
 .findbar {
   position: absolute;
@@ -679,3 +744,141 @@ table.grid.freeze tbody tr[data-r='0'] th.rowhead {
 /* PDF: placed images */
 .pdf-w.pdf-image { cursor: move; }
 .pdf-w.pdf-image > img { width: 100%; height: 100%; display: block; object-fit: fill; pointer-events: none; user-select: none; }
+
+/* spreadsheet: right-click menu on row / column headers */
+.ctx-menu {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  padding: 4px;
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-editorWidget-border, transparent);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+.ctx-menu button {
+  padding: 4px 8px;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.ctx-menu button:hover,
+.ctx-menu button:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.tb-select { font: inherit; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, var(--tb-border)); border-radius: 2px; padding: 1px 4px; height: 24px; }
+
+/* ---- loading skeleton (src/shared/skeleton.ts) ---- */
+.skeleton {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sk-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.sk-toolbar {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  height: 36px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, transparent));
+  background: var(--vscode-editorWidget-background, transparent);
+}
+.sk-toolbar i,
+.sk-page i,
+.sk-page b {
+  display: block;
+  border-radius: 3px;
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(128, 128, 128, 0.2));
+  position: relative;
+  overflow: hidden;
+}
+.sk-toolbar i {
+  width: 26px;
+  height: 20px;
+}
+.sk-toolbar i:nth-child(4n) {
+  width: 52px;
+}
+.sk-grid {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  --sk-line: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.25));
+  background:
+    repeating-linear-gradient(to bottom, transparent 0 23px, var(--sk-line) 23px 24px),
+    repeating-linear-gradient(to right, transparent 0 99px, var(--sk-line) 99px 100px);
+  background-position: 0 0, 40px 0;
+}
+.sk-grid::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40px;
+  background: var(--vscode-editorWidget-background, transparent);
+  border-right: 1px solid var(--sk-line);
+}
+.sk-desk {
+  flex: 1;
+  overflow: hidden;
+  background: var(--desk, var(--vscode-editorWidget-background, transparent));
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+.sk-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 48px 56px;
+  box-sizing: border-box;
+  min-height: 90%;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.25));
+}
+.sk-page i {
+  height: 10px;
+  margin: 0 0 12px;
+}
+.sk-page b {
+  height: 18px;
+  background: none;
+}
+.sk-toolbar i::after,
+.sk-page i::after,
+.sk-grid::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--vscode-editor-selectionHighlightBackground, rgba(255, 255, 255, 0.12)), transparent);
+  transform: translateX(-100%);
+  animation: sk-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes sk-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sk-toolbar i::after,
+  .sk-page i::after,
+  .sk-grid::after {
+    animation: none;
+    display: none;
+  }
+}

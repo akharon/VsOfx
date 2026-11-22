@@ -73,6 +73,10 @@ export class DocxAdapter implements FormatAdapter {
   private readonly tables = new Map<number, TableSpec>();
   /** Paragraphs added by the user (Enter), in insertion order: index -> anchor paragraph. */
   private readonly newParas = new Map<number, number>();
+  /** Original paragraphs removed by the user (join / delete): left out on save and in the view. */
+  private readonly removed = new Set<number>();
+  /** Per removed paragraph: the added paragraphs / tables that were re-anchored (see DelParaEdit.to). */
+  private readonly moved = new Map<number, { paras: number[]; tables: number[] }>();
   /** Fraction of non-empty paragraphs that could be matched to a rendered block (for tests/diagnostics). */
   mappedRatio = 1;
 
@@ -86,7 +90,7 @@ export class DocxAdapter implements FormatAdapter {
     // The Node build of mammoth (used by unit tests) reads `buffer` instead of `arrayBuffer`.
     const B = (globalThis as { Buffer?: { from(b: ArrayBuffer): unknown } }).Buffer;
     if (B) input.buffer = B.from(ab);
-    const result = await mammoth.convertToHtml(input as { arrayBuffer: ArrayBuffer }, { ignoreEmptyParagraphs: false } as never);
+    const result = await mammoth.convertToHtml(input as { arrayBuffer: ArrayBuffer }, { ignoreEmptyParagraphs: false, styleMap: ['u => u'] } as never);
     this.html = result.value;
 
     for (const e of edits) this.applyEdit(e);
@@ -127,6 +131,10 @@ export class DocxAdapter implements FormatAdapter {
       }
       return {};
     }
+    if (edit.kind === 'delpara') {
+      this.delPara(edit.op, edit.index, edit.to);
+      return {};
+    }
     if (edit.kind !== 'paragraph') throw new Error('Not a paragraph edit');
     const isCell = isCellIndex(edit.index) || isNewParaIndex(edit.index);
     if (isNewParaIndex(edit.index) && !this.newParas.has(edit.index)) throw new Error(`Paragraph ${edit.index} does not exist`);
@@ -143,8 +151,41 @@ export class DocxAdapter implements FormatAdapter {
     return {};
   }
 
+  private delPara(op: 'remove' | 'restore', index: number, to: number | undefined): void {
+    if (!(index < this.paragraphs.length)) throw new Error(`Paragraph ${index} does not exist`);
+    if (op === 'restore') {
+      this.removed.delete(index);
+      const m = this.moved.get(index);
+      if (m) {
+        for (const id of m.paras) if (this.newParas.has(id)) this.newParas.set(id, index);
+        for (const id of m.tables) {
+          const t = this.tables.get(id);
+          if (t) this.tables.set(id, { ...t, after: index });
+        }
+      }
+      this.moved.delete(index);
+      return;
+    }
+    this.removed.add(index);
+    if (to === undefined) return;
+    const m = { paras: [] as number[], tables: [] as number[] };
+    for (const [id, a] of this.newParas) {
+      if (a === index) {
+        this.newParas.set(id, to);
+        m.paras.push(id);
+      }
+    }
+    for (const [id, t] of this.tables) {
+      if (t.after === index) {
+        this.tables.set(id, { ...t, after: to });
+        m.tables.push(id);
+      }
+    }
+    this.moved.set(index, m);
+  }
+
   async save(): Promise<Uint8Array> {
-    if (this.edited.size === 0 && this.tables.size === 0) return writeZip(this.entries, {});
+    if (this.edited.size === 0 && this.tables.size === 0 && this.removed.size === 0) return writeZip(this.entries, {});
     const doc = parseXml(text(this.entries, 'word/document.xml'));
     const paras = bodyParagraphs(doc);
     const parts = new DocxParts(this.entries, doc);
@@ -157,7 +198,7 @@ export class DocxAdapter implements FormatAdapter {
       if (anchor && fmt) added.set(index, newParagraphAfter(parts, anchor, fmt));
     }
     for (const [index, s] of this.edited) {
-      if (isNewParaIndex(index)) continue; // written above
+      if (isNewParaIndex(index) || this.removed.has(index)) continue; // added: written above; removed: dropped below
       const p = paras[index];
       if (!p) continue; // table cells are written below
       if (s.fmt) writeParagraph(parts, p, s.fmt);
@@ -178,6 +219,19 @@ export class DocxAdapter implements FormatAdapter {
         }),
       );
       insertTablesAfter(p, tables);
+    }
+    // removed paragraphs go last: added paragraphs and tables may have been anchored after them
+    for (const index of this.removed) {
+      const p = paras[index];
+      const parent = p?.parentNode as Element | null | undefined;
+      if (!p || !parent) continue;
+      const inCell = parent.namespaceURI === W && parent.localName === 'tc';
+      const pPr = Array.from(p.childNodes).find((n) => n.nodeType === 1 && (n as Element).namespaceURI === W && (n as Element).localName === 'pPr') as Element | undefined;
+      const hasSect = !!pPr && descendantsNS(pPr, W, 'sectPr').length > 0;
+      if (inCell || hasSect) {
+        // a cell needs a paragraph and a section break lives in its paragraph: only empty it
+        for (const child of Array.from(p.childNodes)) if (child !== pPr) p.removeChild(child);
+      } else parent.removeChild(p);
     }
     return writeZip(this.entries, { ...parts.replacements(), 'word/document.xml': serializeXml(doc) });
   }
@@ -231,7 +285,12 @@ export class DocxAdapter implements FormatAdapter {
         return j !== undefined && edited.has(j) ? edited.get(j)!.text : undefined;
       },
     };
-    const html = sanitizeChildren(root, hooks);
+    let html = sanitizeChildren(root, hooks);
+    // removed paragraphs are leaves (the view only removes those): drop their blocks, then empty lists
+    for (const j of this.removed) {
+      html = html.replace(new RegExp(`<(p|h[1-6]|li)\\b[^>]*\\sdata-p="${j}"[^>]*>[\\s\\S]*?</\\1>`), '');
+    }
+    if (this.removed.size) html = html.replace(/<(ul|ol)>\s*<\/\1>/g, '');
     this.mappedRatio = candidates === 0 ? 1 : mapped / candidates;
     return html;
   }

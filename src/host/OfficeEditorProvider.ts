@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { EditorCommand, HostMessage, WebviewMessage } from '../shared/messages';
-import { fromByteArray, toByteArray } from '../shared/base64';
+import { asBytes } from '../shared/bytes';
 import { pdfEditLabel } from '../shared/pdf';
 import { SAFE_HREF } from '../shared/richtext';
 import { formatFromPath, isEdit, type Edit, type Format } from '../shared/model';
@@ -21,6 +21,8 @@ interface PanelInfo {
   document: OfficeDocument;
   format: Format | undefined;
   readonly: boolean;
+  /** Short text from the webview for the status bar (word count). */
+  stats?: string;
 }
 
 interface PendingSave {
@@ -36,8 +38,6 @@ interface PendingSave {
  */
 export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeDocument> {
   static readonly viewType = 'vsofx.officeEditor';
-  /** Same editor for Markdown; registered as an *option* so VS Code's text editor stays the default. */
-  static readonly dataViewType = 'vsofx.dataEditor';
 
   private readonly _onDidChange = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<OfficeDocument>>();
   readonly onDidChangeCustomDocument = this._onDidChange.event;
@@ -107,7 +107,7 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
 
     const dist = vscode.Uri.joinPath(this.context.extensionUri, 'dist');
     panel.webview.options = { enableScripts: true, enableCommandUris: false, localResourceRoots: [dist] };
-    panel.webview.html = await this.html(panel.webview, dist);
+    panel.webview.html = await this.html(panel.webview, dist, format);
 
     panel.webview.onDidReceiveMessage((msg: WebviewMessage) => this.onMessage(document, panel, msg));
     panel.onDidChangeViewState(() => this.updateStatus());
@@ -176,7 +176,7 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
         const p = this.takePending(msg.requestId);
         if (p) {
           try {
-            p.resolve(toByteArray(String(msg.bytes)));
+            p.resolve(asBytes(msg.bytes));
           } catch (err) {
             p.reject(err instanceof Error ? err : new Error(String(err)));
           }
@@ -208,21 +208,17 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
         if (SAFE_HREF.test(href)) void vscode.env.openExternal(vscode.Uri.parse(href, true));
         break;
       }
-      case 'renderDiagram': {
-        // Rendered by VS Code's Markdown engine, so diagram extensions (SelDiA, Mermaid) apply.
-        const lang = String(msg.lang);
-        const source = String(msg.source);
-        const id = Number(msg.id);
-        if (!/^(seldia(-[\w-]+)?|mermaid|plantuml)$/.test(lang) || source.length > 200_000) break;
-        const fence = source.includes('```') ? '~~~~' : '```';
-        void Promise.resolve(vscode.commands.executeCommand<string>('markdown.api.render', `${fence}${lang}\n${source}\n${fence}\n`))
-          .then((html) => (typeof html === 'string' ? html : null), () => null)
-          .then((html) => panel.webview.postMessage({ type: 'diagram', id, html } satisfies HostMessage));
-        break;
-      }
       case 'command': {
         const id = EDITOR_COMMANDS[msg.command as EditorCommand];
         if (id && !this.info.get(panel)?.readonly) void vscode.commands.executeCommand(id);
+        break;
+      }
+      case 'status': {
+        const info = this.info.get(panel);
+        if (info) {
+          info.stats = typeof msg.text === 'string' ? msg.text.slice(0, 40) : undefined;
+          this.updateStatus();
+        }
         break;
       }
       case 'securityViolation':
@@ -257,13 +253,13 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
     const info = this.info.get(panel);
     if (!info) return;
     if (!info.format) {
-      void panel.webview.postMessage({ type: 'init', format: 'docx', bytes: '', edits: [], readonly: true } satisfies HostMessage);
+      void panel.webview.postMessage({ type: 'init', format: 'docx', bytes: new Uint8Array(0), edits: [], readonly: true } satisfies HostMessage);
       return;
     }
     void panel.webview.postMessage({
       type: 'init',
       format: info.format,
-      bytes: fromByteArray(info.document.originalBytes),
+      bytes: new Uint8Array(info.document.originalBytes), // a plain copy: VS Code transfers it as it is,
       edits: [...info.document.edits],
       readonly: info.readonly,
     } satisfies HostMessage);
@@ -330,7 +326,7 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
         if (!p.active) continue;
         const info = this.info.get(p);
         if (!info?.format) break;
-        this.status.text = `$(file) ${info.format.toUpperCase()}${info.readonly ? ' · read-only' : ''}`;
+        this.status.text = `$(file) ${info.format.toUpperCase()}${info.readonly ? ' · read-only' : ''}${info.stats ? ` · ${info.stats.replace(/\$\(/g, '$ (')}` : ''}`;
         this.status.tooltip = info.readonly ? 'VsOfx: this view is read-only' : 'VsOfx editor';
         this.status.show();
         return;
@@ -339,7 +335,7 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
     this.status.hide();
   }
 
-  private async html(webview: vscode.Webview, dist: vscode.Uri): Promise<string> {
+  private async html(webview: vscode.Webview, dist: vscode.Uri, format?: Format): Promise<string> {
     const nonce = makeNonce();
     let probeUri: string | undefined;
     if (this.context.extensionMode === vscode.ExtensionMode.Test) {
@@ -355,7 +351,9 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
       cspSource: webview.cspSource,
       scriptUri: webview.asWebviewUri(vscode.Uri.joinPath(dist, 'webview.js')).toString(),
       styleUri: webview.asWebviewUri(vscode.Uri.joinPath(dist, 'webview.css')).toString(),
+      pdfChunkUri: webview.asWebviewUri(vscode.Uri.joinPath(dist, 'pdf.js')).toString(),
       probeUri,
+      format,
       nonce,
     });
   }
@@ -363,16 +361,20 @@ export class OfficeEditorProvider implements vscode.CustomEditorProvider<OfficeD
 
 function editLabel(edit: Edit): string {
   if (edit.kind === 'pdf') return pdfEditLabel(edit.op);
-  if (edit.kind === 'text') return edit.del === '' ? 'Insert text' : edit.ins === '' ? 'Delete text' : 'Edit text';
   if (edit.kind === 'table') return edit.op === 'insert' ? 'Insert table' : 'Remove table';
   if (edit.kind === 'newpara') return edit.op === 'insert' ? 'New paragraph' : 'Remove paragraph';
+  if (edit.kind === 'delpara') return 'Delete paragraph';
   if (edit.kind === 'sheet') return edit.op === 'add' ? 'Add sheet' : edit.op === 'remove' ? 'Delete sheet' : 'Rename sheet';
   if (edit.kind === 'colwidth') return 'Column width';
   if (edit.kind === 'wrap') return 'Wrap text';
   if (edit.kind === 'align') return 'Align';
+  if (edit.kind === 'lines') return `${edit.op === 'insert' ? 'Insert' : 'Delete'} ${edit.axis === 'row' ? 'row' : 'column'}${edit.count > 1 ? 's' : ''}`;
   if (edit.kind === 'batch') {
+    const lines = edit.edits.find((e) => e.kind === 'lines');
+    if (lines) return editLabel(lines);
     if (edit.edits.some((e) => e.kind === 'wrap')) return 'Wrap text';
     if (edit.edits.some((e) => e.kind === 'align')) return 'Align';
+    if (edit.edits.some((e) => e.kind === 'delpara')) return 'Edit text';
     if (edit.edits.some((e) => e.kind === 'newpara')) return 'New paragraph';
     return edit.edits.every((e) => e.kind === 'cell' && e.value === '') ? 'Clear cells' : 'Paste';
   }

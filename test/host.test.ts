@@ -102,6 +102,17 @@ describe('webview HTML (security)', () => {
     expect(html).not.toMatch(/\son\w+=/);
   });
 
+  it('passes the PDF chunk URL as data, without a second script tag or a looser policy', () => {
+    const base = { cspSource: 'vscode-resource:', scriptUri: 'vscode-resource:/webview.js', styleUri: 'vscode-resource:/webview.css', nonce: 'abc' };
+    const html = buildWebviewHtml({ ...base, pdfChunkUri: 'vscode-resource:/pdf.js' });
+    expect(html).toContain('<div id="app" aria-live="polite" data-pdf-chunk="vscode-resource:/pdf.js" data-skeleton="page">');
+    expect(html.match(/<script[^>]*>/g)).toHaveLength(1);
+    expect(html).toContain(`content="${buildCsp('vscode-resource:', 'abc')}"`);
+    expect(buildCsp('vscode-resource:', 'abc')).toContain("script-src 'nonce-abc';");
+    expect(buildCsp('vscode-resource:', 'abc')).toContain("connect-src 'none'");
+    expect(buildWebviewHtml(base)).not.toContain('data-pdf-chunk');
+  });
+
   it('creates unpredictable nonces', () => {
     const a = makeNonce();
     expect(a).toMatch(/^[0-9a-f]{32}$/);
